@@ -2,7 +2,7 @@
 
 ## 0) Objective & Framing
 
-- *Goal:* Produce a georeferenced raster where each pixel stores *vulnerability* (probability of landslide susceptibility given terrain/cover conditions).  
+- *Goal:* Produce a georeferenced raster where each pixel stores * landslide susceptibility* (probability of landslide susceptibility given terrain/cover conditions).  
 - *Inputs:*  
   1. *Orthophoto* (RGB; more bands if available).  
   2. *DEM* (from same survey).  
