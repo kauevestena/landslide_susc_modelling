@@ -2,51 +2,52 @@
 
 ## 0) Objective & Framing
 
-- *Goal:* Produce a georeferenced raster where each pixel stores * landslide susceptibility* (probability of landslide susceptibility given terrain/cover conditions).  
+- *Goal:* Produce a georeferenced raster where each pixel stores *landslide susceptibility* (probability of landslide susceptibility given terrain/cover conditions).  
 - *Inputs:*  
-  1. *Orthophoto* (RGB; more bands if available).  
-  2. *DEM* (from same survey).  
-  3. *Ground truth* (inventory polygons or masks, for training).  
+  1. *Orthophoto* (RGB only from drone survey).  
+  2. *DTM* (only ground points classified from raw DSM from the same drone survey).
+  3. *Ground truth* (raster masks for training, discretized into three classes: 1 - low; 2 - medium; 3 - high).  
 - *Outputs:*  
-  - Primary: *Vulnerability score raster* (0–1 float).  
+  - Primary: *landslide susceptibility score raster* (0–1 float to be later discretized into the same three classes - low, medium, high).  
   - Secondary: *Uncertainty raster, **QA maps, and a **model card*.
 
 ---
 
 ## 1) Data Contracts
 
-- *CRS & units:* Single projected CRS, meters.  
-- *Resolution:* Fix target GSD (e.g., 0.1–0.2 m). Resample all inputs.  
-- *Extent & alignment:* Same grid alignment, same nodata footprint.  
+- *CRS & units:* Single projected CRS defined by the DTM, meters.  
+- *Resolution:* Fix target GSD defined by the DTM. Resample all inputs.  
+- *Extent & alignment:* Same grid alignment defined by the DTM, same nodata footprint.  
 - *Metadata:* CRS, transform, nodata, acquisition date.  
 - *Tiling:* Split into overlapping tiles for large rasters.  
-- *Ground truth:*  
-  - Rasterize polygons.  
-  - Binary or categorical classes.  
-  - Store *ignore mask* for uncertain edges.
+- *Ground truth:*  Categorical classes (three classes: 1 - low; 2 - medium; 3 - high)
 
 ---
 
 ## 2) Pre-processing & Feature Stack
 
-### DEM Hygiene
+### DTM Hygiene
 - Sink filling, conditioning, edge padding.
 
-### DEM-Derived Channels
-- Slope (degrees).  
-- Aspect: *sin* + *cos*.  
-- Plan/profile curvature.  
-- TPI (multi-scale).  
-- TRI / roughness.  
-- Flow accumulation (log).  
-- TWI.  
-- LS factor (optional).  
+### DTM-Derived Channels
+- Slope (degrees): using least squares fitted plane - Horn\Costa-Cabralno
+- Aspect (degrees): *sin* + *cos*.  
+- General, Plan and Profile curvature.  
+- Topographic Position Index (TPI). 
+- Terrain Ruggedness Index (TRI) 
+- Flow Accumulation (Top-Down) - (logarithm scaled) using Multiple Flow Direction (MDT) Freeman, G.T. (1991) 
+- Topographic Wetness Index (TWI) 
+- Stream Power Index (SPI)
+- Sediment Transport Index (STI)
 - Distance to drainage (log).
 
 ### Orthophoto Channels
-- RGB (+NIR if available).  
+- RGB.  
 - Radiometric normalization.  
 - Shadow mask (optional).
+
+### Orthophoto-Derived Channels
+- Land use/cover (categorized into classes - low vegetation, high vegetation, barefoot terrain, building, road, water)
 
 ### Final Feature Tensor
 - Channels stacked in consistent order.  
@@ -57,8 +58,7 @@
 
 ## 3) Label Engineering
 
-- Binary: 1 = landslide, 0 = non-landslide.  
-- Ordered classes: keep as ordinal or map to continuous.  
+- Categorical classes (three classes: 1 - low; 2 - medium; 3 - high)
 - Boundary uncertainty: ignore band ±1–2 px.  
 - Hard-negative sampling: steep slopes with no slides.
 
@@ -77,7 +77,7 @@
 ### Baseline
 - U-Net (or DeepLabv3+) with ImageNet pretrained encoder.  
 - Input: stacked patches.  
-- Output: vulnerability ∈ [0,1].
+- Output: landslide susceptibility ∈ [0,1].
 
 ### Alternatives
 - Two-branch fusion (RGB vs terrain).  
@@ -108,11 +108,9 @@
 
 ## 8) Data Augmentation
 
-- *Geometric:* Rotations, flips, scaling, translations.  
 - *Photometric (RGB):* Brightness/contrast/hue jitter, blur, artifacts.  
-- *Terrain:* Gaussian noise, slight DEM perturbations.  
+- *Terrain:* Gaussian noise, slight DTM perturbations.  
 - *Cutout:* Occlusions.  
-- No unrealistic terrain warps.
 
 ---
 
@@ -138,10 +136,10 @@
 - Sliding-window with overlap + Gaussian blending.  
 - Test-time augmentation (rot/flip).  
 - Calibrate scores.  
-- Export GeoTIFF:  
-  - Band 1: vulnerability.  
-  - Band 2: uncertainty.  
-  - Band 3: valid mask.
+- Export GeoTIFFS:  
+  - File 1: landslide susceptibility.  
+  - File 2: uncertainty.  
+  - File 3: valid mask.
 
 ---
 
@@ -179,31 +177,10 @@
 
 ---
 
-## 16) Known Limitations
 
-- No triggers (rainfall, soil, seismic).  
-- Domain shift risks.  
-- Micro-failures below GSD may be undetectable.
+## Suggested Toolchain
 
----
-
-## 17) Acceptance Checklist
-
-- [ ] Inputs aligned (CRS, GSD, grid).  
-- [ ] DEM derivatives computed.  
-- [ ] Labels rasterized + ignore mask.  
-- [ ] Spatial splits verified.  
-- [ ] Baseline model agreed.  
-- [ ] Inference pipeline defined.  
-- [ ] Calibration chosen.  
-- [ ] Evaluation thresholds set.  
-- [ ] Reproducibility plan ready.
-
----
-
-## 18) Suggested Toolchain
-
-- *I/O & processing:* GDAL, rasterio, richdem/whitebox, numpy.  
+- *I/O & processing:* GDAL, SAGA, rasterio, richdem/whitebox, numpy.  
 - *Modeling:* PyTorch, segmentation_models_pytorch, Albumentations.  
 - *Tracking:* W&B or MLflow, DVC.  
 - *Visualization:* QGIS, matplotlib.
@@ -212,7 +189,7 @@
 
 ## Minimal Baseline
 
-1. Channels: RGB + slope, sin/cos aspect, TPI (small/medium), roughness (small/medium), logFlowAcc, TWI.  
+1. Channels: see Orthophoto Derived Channels and DTM Derived Channels
 2. U-Net ResNet-34 encoder (N channels).  
 3. BCE + Dice, block split, calibrated sigmoid.  
 4. Sliding-window inference with blending.  
