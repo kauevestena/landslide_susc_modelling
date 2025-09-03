@@ -1,0 +1,78 @@
+# Configuration for the Landslide Vulnerability Pipeline
+
+# 1. Project Setup
+project_structure:
+  saga_cmd_path: '/usr/bin/saga_cmd'
+  raw_data_dir: 'raw/'
+  derived_data_dir: 'derivs/'
+  tiles_dir: 'tiles/'
+  labels_dir: 'labels/'
+  splits_dir: 'splits/'
+  experiments_dir: 'experiments/'
+  source_dir: 'src/'
+
+# 2. Synthetic Data Generation
+data_generation:
+  dtm_shape: [256, 256]
+  ortho_shape: [256, 256, 3]
+  gt_shape: [256, 256]
+  seed: 42
+
+# 3. Pre-processing & Feature Stack
+preprocessing:
+  target_gsd: 1.0 # meters
+  dtm_hygiene:
+    sink_filling: true
+  derived_dtm_channels:
+    - slope
+    - aspect
+    - general_curvature
+    - plan_curvature
+    - profile_curvature
+    - tpi
+    - tri
+    - flow_accumulation
+    - twi
+    - spi
+    - sti
+  derived_ortho_channels:
+    - land_use_cover
+  normalization: 'z-score'
+
+# 4. Dataset Splits & Tiling
+dataset:
+  test_size: 0.2
+  val_size: 0.15
+  split_strategy: 'spatial_block'
+  tile_size: 32
+  tile_overlap: 8
+
+# 5. Modeling
+model:
+  name: 'Unet'
+  encoder: 'resnet34'
+  in_channels: 14
+  out_classes: 1 # For binary segmentation (susceptibility)
+
+# 6. Training Protocol
+training:
+  batch_size: 8
+  learning_rate: 0.001
+  lr_scheduler: 'cosine'
+  optimizer: 'adam'
+  loss: 'bce_dice'
+  epochs: 50
+  early_stopping_patience: 10
+  mixed_precision: true
+
+# 7. Inference
+inference:
+  batch_size: 4
+  window_size: 1024
+  overlap: 128
+  tta: true # test-time augmentation
+  mc_dropout_iterations: 10 # for uncertainty
+
+# 8. Reproducibility
+reproducibility:
+  seed: 42
