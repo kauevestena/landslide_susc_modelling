@@ -1,0 +1,16 @@
+rasterio
+numpy
+scipy
+xdem
+PySAGA-cmd
+geopandas
+scikit-image
+scikit-learn
+torch
+torchvision
+segmentation-models-pytorch
+albumentations
+pyyaml
+matplotlib
+tqdm
+noise
