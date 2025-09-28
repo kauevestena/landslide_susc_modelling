@@ -13,4 +13,5 @@ albumentations
 pyyaml
 matplotlib
 tqdm
-noise
+perlin-noise
+joblib
