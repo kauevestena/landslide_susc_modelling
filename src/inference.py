@@ -170,7 +170,7 @@ def write_model_card(
     ]
     if best_epoch is not None:
         lines.append(f"- Best epoch: {best_epoch}")
-    
+
     # Validation metrics section
     if best_metrics:
         lines.append("\n## Validation Metrics")
@@ -183,7 +183,7 @@ def write_model_card(
                 lines.append(f"- {key}: {value:.4f}")
             else:
                 lines.append(f"- {key}: {value}")
-    
+
     # Test metrics section
     if test_metrics:
         lines.append("\n## Test Metrics")
@@ -196,27 +196,35 @@ def write_model_card(
                 lines.append(f"- {key}: {value:.4f}")
             else:
                 lines.append(f"- {key}: {value}")
-    
+
     # Threshold selection section
     if thresholds and "recommended_threshold" in thresholds:
         lines.append("\n## Classification Thresholds")
-        lines.append(f"- Recommended threshold: {thresholds['recommended_threshold']:.4f}")
-        lines.append(f"- Selection method: {thresholds.get('recommendation_method', 'unknown')}")
-        
+        lines.append(
+            f"- Recommended threshold: {thresholds['recommended_threshold']:.4f}"
+        )
+        lines.append(
+            f"- Selection method: {thresholds.get('recommendation_method', 'unknown')}"
+        )
+
         # Add F1-optimal threshold details if available
         if "f1" in thresholds and thresholds["f1"].get("val"):
             f1_metrics = thresholds["f1"]["val"]
-            lines.append(f"- F1-optimal (validation): threshold={f1_metrics['threshold']:.4f}, "
-                        f"F1={f1_metrics['f1']:.4f}, precision={f1_metrics['precision']:.4f}, "
-                        f"recall={f1_metrics['recall']:.4f}")
-        
+            lines.append(
+                f"- F1-optimal (validation): threshold={f1_metrics['threshold']:.4f}, "
+                f"F1={f1_metrics['f1']:.4f}, precision={f1_metrics['precision']:.4f}, "
+                f"recall={f1_metrics['recall']:.4f}"
+            )
+
         # Add Youden threshold details if available
         if "youden" in thresholds and thresholds["youden"].get("val"):
             youden_metrics = thresholds["youden"]["val"]
-            lines.append(f"- Youden-optimal (validation): threshold={youden_metrics['threshold']:.4f}, "
-                        f"J={youden_metrics['youden_j']:.4f}, sensitivity={youden_metrics['sensitivity']:.4f}, "
-                        f"specificity={youden_metrics['specificity']:.4f}")
-    
+            lines.append(
+                f"- Youden-optimal (validation): threshold={youden_metrics['threshold']:.4f}, "
+                f"J={youden_metrics['youden_j']:.4f}, sensitivity={youden_metrics['sensitivity']:.4f}, "
+                f"specificity={youden_metrics['specificity']:.4f}"
+            )
+
     lines.extend(
         [
             "\n## Outputs",
@@ -382,14 +390,14 @@ def run_inference(
                 f"[inference] Using optimal threshold {optimal_threshold:.4f} "
                 f"(method: {threshold_info.get('recommendation_method', 'unknown')})"
             )
-    
+
     # Generate class map using optimal threshold for positive class
     # Create binary mask for positive class first
     positive_binary = (susceptibility >= optimal_threshold).astype(np.uint8)
-    
+
     # Use argmax for multi-class, but override with threshold-based positive class
     class_map = np.argmax(probabilities, axis=0).astype(np.uint8)
-    
+
     # Override positive class pixels based on threshold
     # Only mark as positive if threshold is exceeded, otherwise use argmax result
     if num_classes == 2:
@@ -399,7 +407,7 @@ def run_inference(
         # Multi-class case: if positive class probability exceeds threshold, assign positive
         # Otherwise keep argmax result
         class_map = np.where(positive_binary, positive_class, class_map)
-    
+
     class_map[~valid_pixels] = 255
 
     uncertainty_map = compute_uncertainty(

@@ -509,7 +509,7 @@ def train_model(
         checkpoint = torch.load(best_model_path, map_location=device)
         model.load_state_dict(checkpoint["state_dict"])
         model = model.to(device)
-        
+
         test_loss, test_metrics, test_calibration = evaluate(
             model,
             test_loader,
@@ -527,7 +527,7 @@ def train_model(
     val_labels = best_calibration[1] if best_calibration else None
     test_probs = test_calibration[0] if test_calibration else None
     test_labels = test_calibration[1] if test_calibration else None
-    
+
     threshold_results = select_optimal_thresholds(
         val_probs, val_labels, test_probs, test_labels
     )
