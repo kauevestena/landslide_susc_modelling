@@ -20,9 +20,9 @@ This document orients autonomous and human collaborators to the landslide suscep
 1. **Install dependencies** – `pip install -r requirements.txt` (PyTorch build must match local CUDA/CPU stack).
 2. **Validate inputs** – Ensure all paths in `inputs.py` exist and share projection, resolution, and extent (DTM is the reference grid).
 3. **Tune config** – Key levers: preprocessing toggles, tile sampling parameters, model encoder, training schedule, inference window.
-4. **Run pipeline** – `python -m src.main_pipeline`. Outputs land in `artifacts/` (intermediates) and `outputs/` (GeoTIFFs + model card).
+4. **Run pipeline** – `python -m src.main_pipeline`. The pipeline is **resumable**: it automatically detects existing artifacts and skips completed stages. To force recreation of all artifacts from scratch, use `python -m src.main_pipeline --force_recreate`. Outputs land in `artifacts/` (intermediates) and `outputs/` (GeoTIFFs + model card).
 5. **Review results** – Inspect `outputs/` rasters in GIS, read `outputs/model_card.md`, and cross-check training metrics under `artifacts/experiments/`.
-6. **Calibrate or iterate** – Adjust config, rerun stages as needed. Preprocessing is deterministic; delete relevant subfolders if starting clean.
+6. **Calibrate or iterate** – Adjust config, rerun pipeline (it will resume from the first incomplete stage). Use `--force_recreate` if you need to regenerate all artifacts from scratch.
 
 ## 4. Contribution Playbook
 - **Plan first:** Summarise intent, affected modules, and validation strategy before editing.
@@ -44,6 +44,7 @@ This document orients autonomous and human collaborators to the landslide suscep
 - *Training instability* → Verify class balance in summary, adjust `positive_fraction`, and consider freezing encoder if data is scarce.
 - *Inference slowdowns* → Tune `window_size` / `overlap`, disable TTA, or reduce `mc_dropout_iterations`.
 - *Calibration empty* → Happens when validation positives are absent; log this in metrics and consider alternative splits.
+- *Pipeline stuck on old artifacts* → Use `--force_recreate` flag to regenerate all artifacts from scratch: `python -m src.main_pipeline --force_recreate`.
 
 ## 7. Communication Templates
 - **Status update:** Outline stage (preprocess/train/infer), config hash or Git commit, and notable metrics (macro IoU, AUROC, AUPRC).

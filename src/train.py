@@ -200,8 +200,30 @@ def evaluate(model: nn.Module, loader: Optional[DataLoader], loss_fn: nn.Module,
     return avg_loss, metrics, (probs_concat, labels_concat)
 
 
-def train_model(config: Dict, train_artifacts) -> Dict[str, Optional[str]]:
+def train_model(config: Dict, train_artifacts, force_recreate: bool = False) -> Dict[str, Optional[str]]:
     """Train the segmentation model and return artifact paths."""
+    structure_cfg = config['project_structure']
+    experiments_dir = structure_cfg['experiments_dir']
+    os.makedirs(experiments_dir, exist_ok=True)
+    
+    # Check if model already exists
+    best_model_path = os.path.join(experiments_dir, 'best_model.pth')
+    calibrator_path = os.path.join(experiments_dir, 'isotonic_calibrator.joblib')
+    metrics_path = os.path.join(experiments_dir, 'training_metrics.json')
+    
+    if os.path.exists(best_model_path) and not force_recreate:
+        print(f"[train] Model already exists at {best_model_path}, skipping training")
+        
+        # Return existing artifacts
+        training_artifacts = {
+            'best_model': best_model_path,
+            'calibrator': calibrator_path if os.path.exists(calibrator_path) else None,
+            'metrics': metrics_path if os.path.exists(metrics_path) else None,
+        }
+        return training_artifacts
+    
+    print(f"[train] Training model (force_recreate={force_recreate})")
+    
     seed = config['reproducibility']['seed']
     random.seed(seed)
     np.random.seed(seed)
@@ -209,15 +231,12 @@ def train_model(config: Dict, train_artifacts) -> Dict[str, Optional[str]]:
     if torch.cuda.is_available():
         torch.cuda.manual_seed_all(seed)
 
-    structure_cfg = config['project_structure']
     training_cfg = config['training']
     dataset_cfg = config['dataset']
 
     tiles_dir = structure_cfg['tiles_dir']
     labels_dir = structure_cfg['labels_dir']
     splits_dir = structure_cfg['splits_dir']
-    experiments_dir = structure_cfg['experiments_dir']
-    os.makedirs(experiments_dir, exist_ok=True)
 
     augment_cfg = training_cfg.get('augmentations', {})
     train_dataset = LandslideDataset(tiles_dir, labels_dir, 'train', augment_cfg)

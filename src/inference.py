@@ -171,13 +171,33 @@ def write_model_card(
         f.write('\n'.join(lines))
 
 
-def run_inference(config: Dict, artifacts: Dict[str, 'AreaArtifacts'], training_artifacts: Dict[str, Optional[str]]) -> None:
+def run_inference(config: Dict, artifacts: Dict[str, 'AreaArtifacts'], training_artifacts: Dict[str, Optional[str]], force_recreate: bool = False) -> None:
     """Perform sliding-window inference, optional calibration, and export deliverables."""
     structure_cfg = config['project_structure']
     outputs_dir = structure_cfg.get('outputs_dir', 'outputs')
     os.makedirs(outputs_dir, exist_ok=True)
 
     area = artifacts.get('test') or artifacts['train']
+    area_name = area.name
+    
+    # Check if inference outputs already exist
+    susceptibility_path = os.path.join(outputs_dir, f'{area_name}_landslide_susceptibility.tif')
+    uncertainty_path = os.path.join(outputs_dir, f'{area_name}_uncertainty.tif')
+    valid_mask_path = os.path.join(outputs_dir, f'{area_name}_valid_mask.tif')
+    model_card_path = os.path.join(outputs_dir, 'model_card.md')
+    
+    outputs_exist = (
+        os.path.exists(susceptibility_path) and
+        os.path.exists(uncertainty_path) and
+        os.path.exists(valid_mask_path) and
+        os.path.exists(model_card_path)
+    )
+    
+    if outputs_exist and not force_recreate:
+        print(f"[inference] Inference outputs already exist in {outputs_dir}, skipping inference")
+        return
+    
+    print(f"[inference] Running inference (force_recreate={force_recreate})")
 
     device = torch.device('cuda')
 

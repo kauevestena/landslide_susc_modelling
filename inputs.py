@@ -1,9 +1,9 @@
-#This is meant to hold the paths for input files
+# This is meant to hold the paths for input files
 # Training data
-ortophoto_train = r"C:\Users\Kalim\OneDrive\UFPR\Doutorado\Tese\Processamentos\IA\Training\Ortomosaico_train.tif"
-DTM_train = r"C:\Users\Kalim\OneDrive\UFPR\Doutorado\Tese\Processamentos\IA\Training\DTM_train.tif"
-ground_truth_train = r"C:\Users\Kalim\OneDrive\UFPR\Doutorado\Tese\Processamentos\IA\Training\Ground_truth_train.tif"
+DTM_train = "/home/kaue/data/landslide/training/DTM_train.tif"
+ortophoto_train = "/home/kaue/data/landslide/training/Ortomosaico_train.tif"
+ground_truth_train = "/home/kaue/data/landslide/training/Ground_truth_train.tif"
 
 # Test data
-ortophoto_test = r"C:\Users\Kalim\OneDrive\UFPR\Doutorado\Tese\Processamentos\IA\Test\Ortho_test.tif"
-DTM_test = r"C:\Users\Kalim\OneDrive\UFPR\Doutorado\Tese\Processamentos\IA\Test\DTM_4_GNSS-AAT.tif"
+ortophoto_test = "/home/kaue/data/landslide/test/Ortho_test.tif"
+DTM_test = "/home/kaue/data/landslide/test/DTM_4_GNSS-AAT.tif"

@@ -1,5 +1,6 @@
 ﻿"""End-to-end landslide susceptibility pipeline covering preprocessing, tiling, training, and inference."""
 
+import argparse
 import os
 import json
 import math
@@ -530,9 +531,52 @@ def reproject_raster(src_path: str, reference_profile: Dict, resampling: Resampl
     return dst.astype(dtype), nodata
 
 
-def process_area(area_inputs: AreaInputs, area_dir: str, preprocessing_cfg: Dict, metadata_dir: str, stats: Optional[Dict], seed: int) -> Tuple[AreaArtifacts, Optional[Dict]]:
+def process_area(area_inputs: AreaInputs, area_dir: str, preprocessing_cfg: Dict, metadata_dir: str, stats: Optional[Dict], seed: int, force_recreate: bool = False) -> Tuple[AreaArtifacts, Optional[Dict]]:
     """Run preprocessing for a single area and persist derived artifacts."""
     debug_print(f"process_area: begin processing area '{area_inputs.name}'")
+    
+    # Define expected artifact paths
+    feature_stack_path = os.path.join(area_dir, 'feature_stack.tif')
+    mask_path = os.path.join(area_dir, 'valid_mask.tif')
+    metadata_path = os.path.join(area_dir, 'feature_metadata.json')
+    normalization_stats_path = os.path.join(metadata_dir, 'normalization_stats.json')
+    ground_truth_path = None
+    if area_inputs.ground_truth:
+        ground_truth_path = os.path.join(area_dir, 'ground_truth_aligned.tif')
+    
+    # Check if artifacts already exist
+    artifacts_exist = (
+        os.path.exists(feature_stack_path) and
+        os.path.exists(mask_path) and
+        os.path.exists(metadata_path)
+    )
+    
+    if area_inputs.ground_truth:
+        artifacts_exist = artifacts_exist and os.path.exists(ground_truth_path)
+    
+    if artifacts_exist and not force_recreate:
+        debug_print(f"process_area: artifacts for '{area_inputs.name}' already exist, skipping preprocessing")
+        
+        # Load existing normalization stats if this is the training area
+        existing_stats = stats
+        if area_inputs.name == 'train' and os.path.exists(normalization_stats_path):
+            with open(normalization_stats_path, 'r') as f:
+                existing_stats = json.load(f)
+            debug_print('process_area: loaded existing normalization stats from training area')
+        
+        # Return existing artifacts
+        artifacts = AreaArtifacts(
+            name=area_inputs.name,
+            feature_stack_path=feature_stack_path,
+            mask_path=mask_path,
+            metadata_path=metadata_path,
+            ground_truth_path=ground_truth_path,
+            normalization_stats_path=normalization_stats_path if area_inputs.name == 'train' else None,
+        )
+        return artifacts, existing_stats
+    
+    debug_print(f"process_area: processing area '{area_inputs.name}' (force_recreate={force_recreate})")
+    
     with rasterio.open(area_inputs.dtm) as src:
         dtm = src.read(1).astype(np.float32)
         profile = src.profile
@@ -666,7 +710,7 @@ def process_area(area_inputs: AreaInputs, area_dir: str, preprocessing_cfg: Dict
     return artifacts, stats
 
 
-def preprocess_data(config: Dict) -> Dict[str, AreaArtifacts]:
+def preprocess_data(config: Dict, force_recreate: bool = False) -> Dict[str, AreaArtifacts]:
     """Generate feature stacks and metadata for configured train/test splits."""
     debug_print('preprocess_data: starting preprocessing stage')
     structure_cfg = config['project_structure']
@@ -694,15 +738,45 @@ def preprocess_data(config: Dict) -> Dict[str, AreaArtifacts]:
             metadata_dir,
             stats,
             seed,
+            force_recreate,
         )
 
     return artifacts
 
 
-def prepare_dataset(config: Dict, train_artifacts: AreaArtifacts) -> None:
+def prepare_dataset(config: Dict, train_artifacts: AreaArtifacts, force_recreate: bool = False) -> None:
     """Tile the training area into spatially blocked splits with sampling heuristics."""
     dataset_cfg = config['dataset']
     structure_cfg = config['project_structure']
+    
+    # Check if dataset artifacts already exist
+    splits_path = os.path.join(structure_cfg['splits_dir'], 'splits.json')
+    summary_path = os.path.join(structure_cfg['splits_dir'], 'dataset_summary.json')
+    
+    if os.path.exists(splits_path) and os.path.exists(summary_path) and not force_recreate:
+        debug_print('prepare_dataset: dataset artifacts already exist, skipping tiling')
+        # Verify that tiles exist
+        with open(splits_path, 'r') as f:
+            splits_data = json.load(f)
+        
+        tiles_exist = True
+        for split_name, tile_list in splits_data.items():
+            if not tile_list:
+                continue
+            # Check if at least first and last tile exist
+            first_tile = os.path.join(structure_cfg['tiles_dir'], split_name, tile_list[0])
+            if not os.path.exists(first_tile):
+                tiles_exist = False
+                break
+        
+        if tiles_exist:
+            debug_print('prepare_dataset: verified tile files exist, skipping dataset preparation')
+            return
+        else:
+            debug_print('prepare_dataset: splits.json exists but tiles missing, regenerating')
+    
+    debug_print(f"prepare_dataset: preparing dataset (force_recreate={force_recreate})")
+    
     tile_size = dataset_cfg['tile_size']
     tile_overlap = dataset_cfg['tile_overlap']
     stride = max(1, tile_size - tile_overlap)
@@ -896,6 +970,22 @@ def prepare_dataset(config: Dict, train_artifacts: AreaArtifacts) -> None:
 
 
 def main():
+    parser = argparse.ArgumentParser(
+        description='End-to-end landslide susceptibility pipeline',
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog="""
+Examples:
+  python -m src.main_pipeline                    # Resume from last checkpoint
+  python -m src.main_pipeline --force_recreate   # Force full pipeline recreation
+        """
+    )
+    parser.add_argument(
+        '--force_recreate',
+        action='store_true',
+        help='Force recreation of all artifacts, ignoring existing checkpoints'
+    )
+    args = parser.parse_args()
+    
     debug_print('main: loading configuration from config.yaml')
     with open('config.yaml', 'r') as f:
         config = yaml.safe_load(f)
@@ -904,20 +994,22 @@ def main():
     random.seed(config['reproducibility']['seed'])
     np.random.seed(config['reproducibility']['seed'])
 
+    debug_print(f"main: starting pipeline (force_recreate={args.force_recreate})")
+    
     debug_print('main: starting preprocessing stage')
-    artifacts = preprocess_data(config)
+    artifacts = preprocess_data(config, force_recreate=args.force_recreate)
     debug_print('main: preprocessing complete')
 
     debug_print('main: preparing training dataset tiles')
-    prepare_dataset(config, artifacts['train'])
+    prepare_dataset(config, artifacts['train'], force_recreate=args.force_recreate)
     debug_print('main: dataset preparation complete')
 
     debug_print('main: launching model training')
-    training_artifacts = train_model(config, artifacts['train'])
+    training_artifacts = train_model(config, artifacts['train'], force_recreate=args.force_recreate)
     debug_print('main: training complete')
 
     debug_print('main: running inference and exports')
-    run_inference(config, artifacts, training_artifacts)
+    run_inference(config, artifacts, training_artifacts, force_recreate=args.force_recreate)
     debug_print('main: pipeline finished successfully')
 
 

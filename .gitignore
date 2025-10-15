@@ -215,3 +215,6 @@ splits/
 experiments/
 outputs/
 artifacts/
+
+# IDE
+.vscode/

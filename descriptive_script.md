@@ -30,12 +30,12 @@
 - Sink filling, conditioning, edge padding.
 
 ### DTM-Derived Channels
-- Slope (degrees): using least squares fitted plane - Horn\Costa-Cabralno
+- Slope (degrees): using gradient-based approximation (alternative to least squares fitted plane - Horn/Costa-Cabral).
 - Aspect (degrees): *sin* + *cos*.  
 - General, Plan and Profile curvature.  
 - Topographic Position Index (TPI). 
 - Terrain Ruggedness Index (TRI) 
-- Flow Accumulation (Top-Down) - (logarithm scaled) using Multiple Flow Direction (MDT) Freeman, G.T. (1991) 
+- Flow Accumulation (Top-Down) - (logarithm scaled) using D8 single flow direction algorithm (alternative to Multiple Flow Direction - Freeman, G.T. 1991).
 - Topographic Wetness Index (TWI) 
 - Stream Power Index (SPI)
 - Sediment Transport Index (STI)
@@ -174,6 +174,7 @@
 - File structure: raw, derivs, tiles, labels, splits, experiments.  
 - Versioning: models, scalers, calibrators.  
 - Model card required.
+- **Resumable pipeline:** The pipeline automatically detects existing artifacts and skips completed stages. Use `--force_recreate` flag to force recreation of all artifacts from scratch.
 
 ---
 
