@@ -12,8 +12,8 @@ from sklearn.metrics import (
     auc,
     precision_recall_curve,
     average_precision_score,
-    calibration_curve,
 )
+from sklearn.calibration import calibration_curve
 
 
 def plot_roc_curve(

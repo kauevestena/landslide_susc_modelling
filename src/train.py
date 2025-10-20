@@ -267,11 +267,15 @@ def train_model(
     if os.path.exists(best_model_path) and not force_recreate:
         print(f"[train] Model already exists at {best_model_path}, skipping training")
 
-        # Return existing artifacts
+        # Return existing artifacts with correct keys matching the full training return
         training_artifacts = {
-            "best_model": best_model_path,
-            "calibrator": calibrator_path if os.path.exists(calibrator_path) else None,
-            "metrics": metrics_path if os.path.exists(metrics_path) else None,
+            "model_path": best_model_path,
+            "calibrator_path": (
+                calibrator_path if os.path.exists(calibrator_path) else None
+            ),
+            "metrics_path": metrics_path if os.path.exists(metrics_path) else None,
+            "channel_metadata_path": train_artifacts.metadata_path,
+            "normalization_stats_path": train_artifacts.normalization_stats_path,
         }
         return training_artifacts
 
@@ -305,7 +309,29 @@ def train_model(
     if len(train_dataset) == 0:
         raise ValueError("Training dataset is empty.")
 
-    device = torch.device("cuda")
+    # Device selection - force CPU if GPU is not compatible
+    # GTX 1050 (sm_61) is not supported by PyTorch 2.x which requires sm_70+
+    use_cuda = config.get("training", {}).get("use_cuda", False)
+
+    if use_cuda and torch.cuda.is_available():
+        try:
+            # Test if GPU is actually usable with a convolution operation
+            test_input = torch.randn(1, 3, 32, 32).cuda()
+            test_conv = torch.nn.Conv2d(3, 3, 3).cuda()
+            _ = test_conv(test_input)
+            device = torch.device("cuda")
+            print("[train] Using CUDA device for training")
+        except (RuntimeError, AssertionError) as e:
+            print(f"[train] CUDA test failed: {str(e)[:100]}...")
+            print("[train] Falling back to CPU")
+            device = torch.device("cpu")
+    else:
+        if not use_cuda:
+            print("[train] use_cuda=False in config, using CPU")
+        else:
+            print("[train] CUDA not available, using CPU")
+        device = torch.device("cpu")
+
     pin_memory = device.type == "cuda"
 
     train_loader = DataLoader(

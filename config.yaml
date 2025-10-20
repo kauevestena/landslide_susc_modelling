@@ -72,6 +72,7 @@ model:
   dropout_prob: 0.2
 
 training:
+  use_cuda: false  # Set to true only if GPU is compatible (requires CUDA compute capability >= 7.0)
   batch_size: 4
   learning_rate: 0.0003
   weight_decay: 1.0e-4
@@ -93,11 +94,23 @@ metrics:
   calibration_bins: 15
 
 inference:
+  use_cuda: false  # Set to true only if GPU is compatible (requires CUDA compute capability >= 7.0)
   window_size: 512
   overlap: 256
   tta: true
+  tta_augmentations: 8  # Number of TTA augmentations (0=disabled, 4=basic, 8=full)
   mc_dropout_iterations: 5
   batch_size: 2
+  blending:
+    method: gaussian  # Options: gaussian, linear, none
+    sigma_factor: 0.3  # For gaussian: sigma = overlap * sigma_factor
+  crf:
+    enabled: true
+    iterations: 5  # Number of CRF inference iterations
+    spatial_weight: 3.0  # Bilateral spatial standard deviation
+    color_weight: 3.0  # Bilateral color/feature standard deviation
+    compat_spatial: 3.0  # Spatial compatibility weight
+    compat_bilateral: 10.0  # Bilateral compatibility weight
 
 reproducibility:
   seed: 42

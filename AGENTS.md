@@ -13,8 +13,9 @@ This document orients autonomous and human collaborators to the landslide suscep
 - `inputs.py` – Central definition of training/test rasters; avoid committing secrets or network paths that will break on other machines.
 - `src/main_pipeline.py` – Preprocessing + dataset preparation utilities. Generates artefacts under `artifacts/` and drives the full run.
 - `src/train.py` – Model training helpers (dataset loaders, losses, metrics, calibration).
-- `src/inference.py` – Sliding-window inference, uncertainty estimation, deliverable exports, model card generation.
+- `src/inference.py` – Sliding-window inference with weighted blending, TTA, CRF post-processing, uncertainty estimation, deliverable exports, model card generation.
 - `descriptive_script.md` – Domain narrative for landslide workflow; use it for alignment when proposing changes.
+- `INFERENCE_ENHANCEMENTS.md` – Detailed documentation of advanced inference techniques (blending, TTA, CRF).
 
 ## 3. Standard Operating Procedure
 1. **Install dependencies** – `pip install -r requirements.txt` (PyTorch build must match local CUDA/CPU stack).
