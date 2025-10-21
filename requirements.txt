@@ -16,3 +16,7 @@ tqdm
 perlin-noise
 joblib
 pydensecrf
+requests
+
+# Optional: For Dynamic World fetching (requires Google Earth Engine setup)
+# earthengine-api

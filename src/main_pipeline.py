@@ -60,6 +60,20 @@ from scipy.ndimage import (
 from src.train import train_model
 from src.inference import run_inference
 
+# Import external LULC fetchers
+try:
+    from src.external_data_fetch import (
+        fetch_and_process_worldcover,
+        fetch_and_process_dynamic_world,
+        DYNAMIC_WORLD_AVAILABLE,
+    )
+
+    EXTERNAL_LULC_AVAILABLE = True
+except ImportError:
+    EXTERNAL_LULC_AVAILABLE = False
+    DYNAMIC_WORLD_AVAILABLE = False
+    print("[main_pipeline] WARNING: External LULC fetchers not available")
+
 
 @dataclass
 class AreaInputs:
@@ -373,6 +387,84 @@ def normalize_radiometry(
         band[~valid_mask] = 0.0
         normalized[band_idx] = band
     return normalized
+
+
+def fetch_external_lulc(
+    reference_raster: str,
+    area_name: str,
+    area_dir: str,
+    lulc_config: Dict,
+    valid_mask: np.ndarray,
+    reference_profile: Dict,
+) -> Tuple[np.ndarray, np.ndarray, Dict]:
+    """
+    Fetch and process external LULC data from WorldCover or Dynamic World.
+
+    Args:
+        reference_raster: Path to reference DTM raster
+        area_name: Name of the area (train/test)
+        area_dir: Directory to cache downloaded LULC data
+        lulc_config: Configuration for external LULC fetching
+        valid_mask: Valid pixel mask from DTM
+        reference_profile: Rasterio profile of the reference grid
+
+    Returns:
+        Tuple of (one_hot_array, raw_labels, class_info_dict)
+    """
+    if not EXTERNAL_LULC_AVAILABLE:
+        raise RuntimeError(
+            "External LULC fetchers not available. Install required dependencies."
+        )
+
+    source = lulc_config.get("source", "worldcover").lower()
+    force_download = lulc_config.get("force_download", False)
+    lulc_cache_dir = os.path.join(area_dir, "lulc_cache")
+
+    debug_print(f"fetch_external_lulc: fetching {source} data for {area_name}")
+
+    if source == "worldcover":
+        year = lulc_config.get("worldcover", {}).get("year", 2021)
+        one_hot_path, raw_path, class_info = fetch_and_process_worldcover(
+            reference_raster,
+            lulc_cache_dir,
+            year=year,
+            force_download=force_download,
+        )
+    elif source == "dynamic_world":
+        if not DYNAMIC_WORLD_AVAILABLE:
+            raise RuntimeError(
+                "Dynamic World requires Google Earth Engine. Install: pip install earthengine-api"
+            )
+        dw_config = lulc_config.get("dynamic_world", {})
+        one_hot_path, raw_path, class_info = fetch_and_process_dynamic_world(
+            reference_raster,
+            lulc_cache_dir,
+            start_date=dw_config.get("start_date"),
+            end_date=dw_config.get("end_date"),
+            use_probabilities=dw_config.get("use_probabilities", False),
+            force_download=force_download,
+            ee_project=dw_config.get("ee_project"),
+        )
+    else:
+        raise ValueError(f"Unknown LULC source: {source}")
+
+    # Load the one-hot encoded raster
+    with rasterio.open(one_hot_path) as src:
+        one_hot_data = src.read()  # Shape: (num_classes, height, width)
+
+    # Load the raw labels
+    with rasterio.open(raw_path) as src:
+        raw_labels = src.read(1).astype(np.int16)
+
+    # Mask invalid pixels
+    one_hot_data[:, ~valid_mask] = 0.0
+    raw_labels[~valid_mask] = -1
+
+    debug_print(
+        f"fetch_external_lulc: loaded {one_hot_data.shape[0]} classes from {source}"
+    )
+
+    return one_hot_data.astype(np.float32), raw_labels, class_info
 
 
 def derive_land_cover(
@@ -723,12 +815,26 @@ def process_area(
     )
     debug_print("process_area: normalized orthophoto radiometry")
 
-    land_cover_one_hot, land_cover_labels = derive_land_cover(
-        ortho_norm,
-        valid_mask,
-        preprocessing_cfg["orthophoto_channels"].get("land_cover_clusters", 6),
-        seed,
-    )
+    # Fetch LULC data: external or K-means clustering
+    lulc_class_info = {}
+    if preprocessing_cfg.get("external_lulc", {}).get("enabled", False):
+        debug_print("process_area: using external LULC data")
+        land_cover_one_hot, land_cover_labels, lulc_class_info = fetch_external_lulc(
+            area_inputs.dtm,
+            area_inputs.name,
+            area_dir,
+            preprocessing_cfg["external_lulc"],
+            valid_mask,
+            profile,
+        )
+    else:
+        debug_print("process_area: using K-means clustering for LULC")
+        land_cover_one_hot, land_cover_labels = derive_land_cover(
+            ortho_norm,
+            valid_mask,
+            preprocessing_cfg["orthophoto_channels"].get("land_cover_clusters", 6),
+            seed,
+        )
 
     feature_stack, channel_names = build_feature_stack(
         dem_features,
@@ -788,9 +894,17 @@ def process_area(
     metadata = {
         "channel_names": channel_names,
         "channel_map": {name: idx for idx, name in enumerate(channel_names)},
-        "land_cover_clusters": preprocessing_cfg["orthophoto_channels"].get(
-            "land_cover_clusters", 6
+        "land_cover_clusters": (
+            len(lulc_class_info)
+            if lulc_class_info
+            else preprocessing_cfg["orthophoto_channels"].get("land_cover_clusters", 6)
         ),
+        "lulc_source": (
+            preprocessing_cfg.get("external_lulc", {}).get("source", "kmeans")
+            if preprocessing_cfg.get("external_lulc", {}).get("enabled", False)
+            else "kmeans"
+        ),
+        "lulc_class_info": lulc_class_info if lulc_class_info else {},
         "source_files": {
             "dtm": area_inputs.dtm,
             "ortho": area_inputs.ortho,
@@ -1061,6 +1175,85 @@ def prepare_dataset(
                         split_positions[split_name]["pos"].append(entry)
                     elif slope_mean >= slope_threshold:
                         split_positions[split_name]["neg"].append(entry)
+
+    def _count_positions(split_name: str) -> int:
+        groups = split_positions[split_name]
+        return len(groups["pos"]) + len(groups["neg"])
+
+    def _pop_random(
+        entries: List[Tuple[int, int]], count: int
+    ) -> List[Tuple[int, int]]:
+        if count <= 0 or not entries:
+            return []
+        count = min(count, len(entries))
+        indices = rng.sample(range(len(entries)), count)
+        indices.sort(reverse=True)
+        return [entries.pop(idx) for idx in indices]
+
+    def _reassign_from_train(target_split: str, required: int) -> None:
+        if required <= 0:
+            return
+        train_total = _count_positions("train")
+        if train_total <= 1:
+            return
+        move_total = min(required, train_total - 1)
+        if move_total <= 0:
+            return
+        train_pos = split_positions["train"]["pos"]
+        train_neg = split_positions["train"]["neg"]
+        train_total = len(train_pos) + len(train_neg)
+        if train_total == 0:
+            return
+        pos_ratio = len(train_pos) / train_total if train_total else 0.0
+        pos_to_move = min(len(train_pos), int(round(move_total * pos_ratio)))
+        neg_to_move = move_total - pos_to_move
+        if neg_to_move > len(train_neg):
+            neg_to_move = len(train_neg)
+        assigned = pos_to_move + neg_to_move
+        if assigned < move_total:
+            remaining = move_total - assigned
+            extra_pos = min(remaining, len(train_pos) - pos_to_move)
+            pos_to_move += extra_pos
+            remaining -= extra_pos
+            if remaining > 0:
+                extra_neg = min(remaining, len(train_neg) - neg_to_move)
+                neg_to_move += extra_neg
+        if pos_to_move == 0 and len(train_pos) > 0 and move_total > 0:
+            pos_to_move = min(len(train_pos), move_total)
+            neg_to_move = move_total - pos_to_move
+            if neg_to_move > len(train_neg):
+                neg_to_move = len(train_neg)
+        neg_to_move = max(0, neg_to_move)
+        moved_pos = _pop_random(train_pos, pos_to_move)
+        moved_neg = _pop_random(train_neg, neg_to_move)
+        split_positions[target_split]["pos"].extend(moved_pos)
+        split_positions[target_split]["neg"].extend(moved_neg)
+
+    total_candidates = sum(_count_positions(split) for split in split_positions)
+
+    if (
+        (test_size > 0 and _count_positions("test") == 0)
+        or (val_size > 0 and _count_positions("val") == 0)
+    ) and total_candidates > 0:
+        debug_print(
+            "prepare_dataset: insufficient hold-out tiles from block grid; reallocating from training set"
+        )
+
+    if test_size > 0 and total_candidates > 0:
+        desired_test = int(round(total_candidates * test_size))
+        if desired_test == 0:
+            desired_test = 1
+        need_test = desired_test - _count_positions("test")
+        if need_test > 0:
+            _reassign_from_train("test", need_test)
+
+    if val_size > 0 and total_candidates > 0:
+        desired_val = int(round(total_candidates * val_size))
+        if desired_val == 0:
+            desired_val = 1
+        need_val = desired_val - _count_positions("val")
+        if need_val > 0:
+            _reassign_from_train("val", need_val)
 
     tile_records: Dict[str, List[str]] = {split: [] for split in split_blocks}
     class_pixel_counts: Dict[str, int] = {

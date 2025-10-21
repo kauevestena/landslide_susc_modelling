@@ -44,22 +44,32 @@ preprocessing:
     include_distance_to_drainage: true
   orthophoto_channels:
     radiometric_normalization: zscore
-    land_cover_clusters: 6
+  external_lulc:
+    enabled: true
+    source: worldcover  # Options: worldcover, dynamic_world, none
+    worldcover:
+      year: 2021  # 2020 or 2021
+    dynamic_world:
+      start_date: null  # YYYY-MM-DD format, null for auto (last 6 months)
+      end_date: null
+      use_probabilities: false  # Use probability bands instead of hard classification
+      ee_project: null  # Google Cloud project ID for Earth Engine
+    force_download: false  # Force re-download even if cached files exist
   normalization:
     strategy: zscore
     epsilon: 1.0e-6
   boundary_ignore_pixels: 2
-  min_valid_fraction: 0.55
+  min_valid_fraction: 0.4  # RELAXED from 0.55 to match dataset min_valid_fraction
 
 dataset:
-  tile_size: 512
-  tile_overlap: 64
+  tile_size: 256  # REDUCED from 512 to create ~4x more tiles
+  tile_overlap: 32  # REDUCED proportionally (was 64)
   block_grid: [1, 1]
   positive_class: 2
-  positive_min_fraction: 0.01
-  positive_fraction: 0.5
+  positive_min_fraction: 0.005  # RELAXED from 0.01 (0.5% instead of 1%)
+  positive_fraction: 0.3  # REDUCED from 0.5 to allow more negative tiles
   negative_slope_threshold_deg: 30.0
-  min_valid_fraction: 0.5
+  min_valid_fraction: 0.4  # RELAXED from 0.5 (40% instead of 50%)
   val_size: 0.15
   test_size: 0.2
   max_tiles_per_split: null
@@ -76,9 +86,9 @@ training:
   batch_size: 4
   learning_rate: 0.0003
   weight_decay: 1.0e-4
-  epochs: 20
+  epochs: 30  # INCREASED from 20 since we now have proper validation for early stopping
   lr_scheduler: cosine
-  early_stopping_patience: 5
+  early_stopping_patience: 7  # INCREASED from 5 to allow more recovery time
   mixed_precision: true
   gradient_clip_norm: 1.0
   augmentations:

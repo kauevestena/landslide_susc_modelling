@@ -14,8 +14,10 @@ This document orients autonomous and human collaborators to the landslide suscep
 - `src/main_pipeline.py` – Preprocessing + dataset preparation utilities. Generates artefacts under `artifacts/` and drives the full run.
 - `src/train.py` – Model training helpers (dataset loaders, losses, metrics, calibration).
 - `src/inference.py` – Sliding-window inference with weighted blending, TTA, CRF post-processing, uncertainty estimation, deliverable exports, model card generation.
+- `src/external_data_fetch/` – External LULC data fetchers (ESA WorldCover, Google Dynamic World) with standalone CLI interfaces.
 - `descriptive_script.md` – Domain narrative for landslide workflow; use it for alignment when proposing changes.
 - `INFERENCE_ENHANCEMENTS.md` – Detailed documentation of advanced inference techniques (blending, TTA, CRF).
+- `EXTERNAL_LULC_IMPLEMENTATION.md` – Guide to external LULC integration, replacing K-means clustering with validated land cover products.
 
 ## 3. Standard Operating Procedure
 1. **Install dependencies** – `pip install -r requirements.txt` (PyTorch build must match local CUDA/CPU stack).
@@ -46,6 +48,8 @@ This document orients autonomous and human collaborators to the landslide suscep
 - *Inference slowdowns* → Tune `window_size` / `overlap`, disable TTA, or reduce `mc_dropout_iterations`.
 - *Calibration empty* → Happens when validation positives are absent; log this in metrics and consider alternative splits.
 - *Pipeline stuck on old artifacts* → Use `--force_recreate` flag to regenerate all artifacts from scratch: `python -m src.main_pipeline --force_recreate`.
+- *External LULC download fails* → Check internet connection; for WorldCover verify WMS access, for Dynamic World authenticate via `earthengine authenticate`.
+- *Channel count mismatch after LULC change* → Switching between K-means and external LULC mid-project requires `--force_recreate` to regenerate all artifacts consistently.
 
 ## 7. Communication Templates
 - **Status update:** Outline stage (preprocess/train/infer), config hash or Git commit, and notable metrics (macro IoU, AUROC, AUPRC).

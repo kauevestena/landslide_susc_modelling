@@ -283,6 +283,80 @@ After reviewing evaluation results:
 - **Full Implementation**: See `IMPLEMENTATION_SUMMARY.md`
 - **Evaluation Roadmap**: See `EVALUATION_ROADMAP.md` for future features
 - **Quick Reference**: See `EVALUATION_QUICK_REF.md` for code snippets
+- **External LULC Integration**: See `EXTERNAL_LULC_IMPLEMENTATION.md` for using validated land cover datasets
+
+## External LULC Quick Start
+
+### Option 1: ESA WorldCover (Recommended - No Auth Required)
+
+1. **Enable in config.yaml**:
+```yaml
+preprocessing:
+  external_lulc:
+    enabled: true
+    source: worldcover
+    worldcover:
+      year: 2021
+```
+
+2. **Install dependencies**:
+```bash
+pip install requests
+```
+
+3. **Run pipeline**:
+```bash
+python -m src.main_pipeline --force_recreate
+```
+
+WorldCover will be automatically downloaded and cached in `artifacts/derived/*/lulc_cache/`.
+
+### Option 2: Google Dynamic World (Requires Earth Engine)
+
+1. **Setup Earth Engine**:
+```bash
+pip install earthengine-api
+earthengine authenticate
+```
+
+2. **Enable in config.yaml**:
+```yaml
+preprocessing:
+  external_lulc:
+    enabled: true
+    source: dynamic_world
+    dynamic_world:
+      start_date: "2023-01-01"
+      end_date: "2023-06-30"
+```
+
+3. **Run pipeline**:
+```bash
+python -m src.main_pipeline --force_recreate
+```
+
+### Verify External LULC Integration
+
+```bash
+# Check LULC source in metadata
+cat artifacts/derived/train/feature_metadata.json | grep -A 5 lulc_source
+
+# Verify LULC classes
+cat artifacts/derived/train/feature_metadata.json | jq '.lulc_class_info'
+
+# View cached LULC data
+ls -lh artifacts/derived/train/lulc_cache/
+```
+
+### Disable External LULC (Use K-means)
+
+```yaml
+preprocessing:
+  external_lulc:
+    enabled: false
+```
+
+This reverts to the original K-means clustering approach.
 
 ## Support
 
