@@ -15,7 +15,8 @@ matplotlib
 tqdm
 perlin-noise
 joblib
-pydensecrf
+cython<3
+git+https://github.com/lucasb-eyer/pydensecrf.git@master#egg=pydensecrf
 requests
 
 # Optional: For Dynamic World fetching (requires Google Earth Engine setup)

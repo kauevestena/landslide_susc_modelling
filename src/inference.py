@@ -328,6 +328,11 @@ def apply_crf(
         )
         return probabilities
 
+    # Ensure input arrays are C-contiguous and proper dtype
+    probabilities = np.ascontiguousarray(probabilities, dtype=np.float32)
+    features = np.ascontiguousarray(features, dtype=np.float32)
+    mask = np.ascontiguousarray(mask, dtype=bool)
+    
     num_classes, height, width = probabilities.shape
 
     # Normalize features to 0-255 range for CRF (use first 3 channels if available)
@@ -354,8 +359,11 @@ def apply_crf(
     d = dcrf.DenseCRF2D(width, height, num_classes)
 
     # Set unary potentials (negative log probabilities)
+    # Ensure C-contiguous arrays for pydensecrf
     probs_clipped = np.clip(probabilities, 1e-10, 1.0)
+    probs_clipped = np.ascontiguousarray(probs_clipped, dtype=np.float32)
     unary = unary_from_softmax(probs_clipped)
+    unary = np.ascontiguousarray(unary, dtype=np.float32)
     d.setUnaryEnergy(unary)
 
     # Add pairwise Gaussian potential (spatial smoothness)
@@ -367,10 +375,13 @@ def apply_crf(
     )
 
     # Add pairwise bilateral potential (edge-aware smoothing)
+    # Prepare RGB image in HWC format with proper data type and memory layout
+    rgbim = feat_for_crf.transpose(1, 2, 0)
+    rgbim = np.ascontiguousarray(rgbim, dtype=np.uint8)
     d.addPairwiseBilateral(
         sxy=spatial_weight,
         srgb=color_weight,
-        rgbim=feat_for_crf.transpose(1, 2, 0).astype(np.uint8),
+        rgbim=rgbim,
         compat=compat_bilateral,
         kernel=dcrf.DIAG_KERNEL,
         normalization=dcrf.NORMALIZE_SYMMETRIC,

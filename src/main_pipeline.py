@@ -429,6 +429,7 @@ def fetch_external_lulc(
             lulc_cache_dir,
             year=year,
             force_download=force_download,
+            use_s3=True,  # Use S3 direct download (raw classification) instead of WMS
         )
     elif source == "dynamic_world":
         if not DYNAMIC_WORLD_AVAILABLE:
