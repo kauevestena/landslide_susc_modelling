@@ -14,13 +14,27 @@ An end-to-end deep learning pipeline for landslide susceptibility mapping from d
 
 ## Quick Start
 
+### Prerequisites
+**REQUIRED**: Python virtual environment (`.venv`)
+
+See **[VENV_SETUP.md](VENV_SETUP.md)** for detailed instructions.
+
+```bash
+# Create and activate virtual environment
+python3 -m venv .venv
+source .venv/bin/activate  # Linux/macOS
+# OR: .venv\Scripts\activate  # Windows
+```
+
 ### Installation
 ```bash
+# With venv activated:
 pip install -r requirements.txt
 ```
 
 ### Usage
 ```bash
+# With venv activated:
 # Run the full pipeline (resumes from last checkpoint)
 python -m src.main_pipeline
 

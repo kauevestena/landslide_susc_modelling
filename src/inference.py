@@ -565,6 +565,38 @@ def write_geotiff(
         dst.write(data.astype(dtype))
 
 
+def write_multiband_geotiff(
+    path: str,
+    array: np.ndarray,
+    reference_path: str,
+    dtype: str,
+    nodata: Optional[float] = None,
+    descriptions: Optional[List[str]] = None,
+) -> None:
+    """Write a multi-band array using metadata from an existing raster."""
+    with rasterio.open(reference_path) as src:
+        meta = src.meta.copy()
+
+    # Ensure array is 3D [bands, height, width]
+    if array.ndim == 2:
+        array = array[np.newaxis, ...]
+
+    num_bands = array.shape[0]
+    meta.update(count=num_bands, dtype=dtype)
+    if nodata is not None:
+        meta["nodata"] = nodata
+
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    with rasterio.open(path, "w", **meta) as dst:
+        dst.write(array.astype(dtype))
+
+        # Set band descriptions if provided
+        if descriptions:
+            for i, desc in enumerate(descriptions, start=1):
+                if i <= num_bands:
+                    dst.set_band_description(i, desc)
+
+
 def write_model_card(
     config: Dict,
     training_artifacts: Dict[str, Optional[str]],
@@ -935,24 +967,52 @@ def run_inference(
         logger.info("[run_inference] MC Dropout disabled (iterations=0)")
 
     # Extract and calibrate susceptibility
-    logger.info("[run_inference] Extracting susceptibility map for positive class...")
-    susceptibility = probabilities[positive_class, :, :].copy()
+    # For 3-class ordinal problem: compute weighted susceptibility score
+    # Classes: 0=Low, 1=Medium, 2=High landslide probability
+    logger.info("[run_inference] Computing susceptibility maps...")
     valid_pixels = (weight_sum > 0) & valid_mask
 
+    # Extract probability of highest class (class 2 = high risk)
+    susceptibility_high = probabilities[positive_class, :, :].copy()
+
+    # Compute ordinal susceptibility score: weighted by class severity
+    # Score = 0*P(low) + 0.5*P(medium) + 1.0*P(high)
+    # This gives a continuous measure from 0 (definitely low) to 1 (definitely high)
+    if num_classes == 3:
+        logger.info(
+            "[run_inference] Computing ordinal susceptibility (3-class weighted)"
+        )
+        susceptibility_ordinal = (
+            0.0 * probabilities[0, :, :]  # Low risk
+            + 0.5 * probabilities[1, :, :]  # Medium risk
+            + 1.0 * probabilities[2, :, :]  # High risk
+        ).astype(np.float32)
+    else:
+        # Binary or other case: use positive class probability
+        susceptibility_ordinal = susceptibility_high.copy()
+
+    # Apply calibration to high-class probability
     if calibrator is not None and np.any(valid_pixels):
-        logger.info("[run_inference] Applying calibration to susceptibility values...")
-        calibrated = calibrator.predict(susceptibility[valid_pixels])
-        susceptibility[valid_pixels] = calibrated
+        logger.info("[run_inference] Applying calibration to high-risk probability...")
+        calibrated = calibrator.predict(susceptibility_high[valid_pixels])
+        susceptibility_high[valid_pixels] = calibrated
         logger.info("[run_inference] Calibration applied")
     else:
         logger.info(
             "[run_inference] Skipping calibration (no calibrator or no valid pixels)"
         )
 
-    susceptibility = np.clip(susceptibility, 0.0, 1.0).astype(np.float32)
+    # Use ordinal score as primary susceptibility
+    susceptibility = np.clip(susceptibility_ordinal, 0.0, 1.0).astype(np.float32)
+    susceptibility_high = np.clip(susceptibility_high, 0.0, 1.0).astype(np.float32)
     susceptibility[~valid_pixels] = 0.0
+    susceptibility_high[~valid_pixels] = 0.0
+
     logger.info(
-        f"[run_inference] Susceptibility range: [{susceptibility.min():.4f}, {susceptibility.max():.4f}]"
+        f"[run_inference] Ordinal susceptibility range: [{susceptibility.min():.4f}, {susceptibility.max():.4f}]"
+    )
+    logger.info(
+        f"[run_inference] High-class probability range: [{susceptibility_high.min():.4f}, {susceptibility_high.max():.4f}]"
     )
 
     # Load optimal threshold
@@ -1004,6 +1064,10 @@ def run_inference(
     # Write outputs
     logger.info("[run_inference] Writing output GeoTIFFs...")
     susceptibility_path = os.path.join(outputs_dir, f"{area.name}_susceptibility.tif")
+    susceptibility_high_path = os.path.join(
+        outputs_dir, f"{area.name}_susceptibility_high.tif"
+    )
+    class_probs_path = os.path.join(outputs_dir, f"{area.name}_class_probabilities.tif")
     uncertainty_path = os.path.join(outputs_dir, f"{area.name}_uncertainty.tif")
     class_map_path = os.path.join(outputs_dir, f"{area.name}_class_map.tif")
     valid_mask_path = os.path.join(outputs_dir, f"{area.name}_valid_mask.tif")
@@ -1015,6 +1079,26 @@ def run_inference(
         area.feature_stack_path,
         dtype="float32",
         nodata=0.0,
+    )
+
+    logger.info(f"[run_inference] Writing: {susceptibility_high_path}")
+    write_geotiff(
+        susceptibility_high_path,
+        susceptibility_high,
+        area.feature_stack_path,
+        dtype="float32",
+        nodata=0.0,
+    )
+
+    # Save all class probabilities as multi-band GeoTIFF
+    logger.info(f"[run_inference] Writing: {class_probs_path}")
+    write_multiband_geotiff(
+        class_probs_path,
+        probabilities,  # Shape: [num_classes, H, W]
+        area.feature_stack_path,
+        dtype="float32",
+        nodata=0.0,
+        descriptions=[f"P(Class {i})" for i in range(num_classes)],
     )
 
     logger.info(f"[run_inference] Writing: {uncertainty_path}")
@@ -1051,7 +1135,9 @@ def run_inference(
         area,
         outputs_dir,
         products={
-            "susceptibility": susceptibility_path,
+            "susceptibility_ordinal": susceptibility_path,
+            "susceptibility_high": susceptibility_high_path,
+            "class_probabilities": class_probs_path,
             "uncertainty": uncertainty_path,
             "class_map": class_map_path,
             "valid_mask": valid_mask_path,

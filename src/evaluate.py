@@ -51,7 +51,144 @@ from src.metrics import (
 from src.visualize import generate_all_plots, plot_roc_curve, plot_pr_curve
 
 
-def load_raster(path: str) -> Tuple[np.ndarray, dict]:
+def evaluate_binary_strategy(
+    y_true_binary: np.ndarray,
+    y_probs: np.ndarray,
+    threshold: float,
+    output_dir: str,
+    strategy_name: str,
+) -> Dict:
+    """
+    Evaluate binary classification for a specific strategy.
+
+    Args:
+        y_true_binary: Binary ground truth (0/1)
+        y_probs: Predicted probabilities
+        threshold: Classification threshold
+        output_dir: Output directory
+        strategy_name: Name for this strategy (for file naming)
+
+    Returns:
+        Dictionary of metrics
+    """
+    metrics = {}
+
+    # Check if we have both classes
+    if len(np.unique(y_true_binary)) < 2:
+        print(f"  WARNING: Only one class present!")
+        return {"error": "Only one class present"}
+
+    # Threshold-independent metrics
+    try:
+        auroc = roc_auc_score(y_true_binary, y_probs)
+        metrics["auroc"] = float(auroc)
+        print(f"  AUROC: {auroc:.4f}")
+    except Exception as e:
+        print(f"  AUROC: ERROR - {e}")
+        metrics["auroc"] = None
+
+    try:
+        auprc = average_precision_score(y_true_binary, y_probs)
+        metrics["auprc"] = float(auprc)
+        print(f"  AUPRC: {auprc:.4f}")
+    except Exception as e:
+        print(f"  AUPRC: ERROR - {e}")
+        metrics["auprc"] = None
+
+    # Threshold-dependent metrics
+    y_pred = (y_probs >= threshold).astype(int)
+    acc = accuracy_score(y_true_binary, y_pred)
+    f1 = f1_score(y_true_binary, y_pred, average="binary", zero_division=0)
+    tn, fp, fn, tp = confusion_matrix(y_true_binary, y_pred, labels=[0, 1]).ravel()
+
+    precision = tp / (tp + fp) if (tp + fp) > 0 else 0.0
+    recall = tp / (tp + fn) if (tp + fn) > 0 else 0.0
+    specificity = tn / (tn + fp) if (tn + fp) > 0 else 0.0
+    iou_pos = tp / (tp + fp + fn) if (tp + fp + fn) > 0 else 0.0
+    iou_neg = tn / (tn + fp + fn) if (tn + fp + fn) > 0 else 0.0
+    macro_iou = (iou_pos + iou_neg) / 2.0
+
+    metrics.update(
+        {
+            "threshold": float(threshold),
+            "accuracy": float(acc),
+            "f1": float(f1),
+            "precision": float(precision),
+            "recall": float(recall),
+            "specificity": float(specificity),
+            "iou_positive": float(iou_pos),
+            "iou_negative": float(iou_neg),
+            "macro_iou": float(macro_iou),
+            "confusion_matrix": {
+                "true_negative": int(tn),
+                "false_positive": int(fp),
+                "false_negative": int(fn),
+                "true_positive": int(tp),
+            },
+        }
+    )
+
+    print(f"  At threshold {threshold:.3f}:")
+    print(f"    Accuracy: {acc:.4f}, F1: {f1:.4f}")
+    print(f"    Precision: {precision:.4f}, Recall: {recall:.4f}")
+    print(f"    IoU: {iou_pos:.4f}, Macro IoU: {macro_iou:.4f}")
+    print(f"    Confusion: TN={tn:,} FP={fp:,} FN={fn:,} TP={tp:,}")
+
+    # Find optimal thresholds
+    threshold_youden, youden_metrics = find_optimal_threshold_youden(
+        y_true_binary, y_probs
+    )
+    threshold_f1, f1_metrics = find_optimal_threshold_f1(y_true_binary, y_probs)
+
+    metrics["optimal_thresholds"] = {
+        "youden": {
+            "threshold": float(threshold_youden),
+            "sensitivity": youden_metrics["sensitivity"],
+            "specificity": youden_metrics["specificity"],
+            "youden_j": youden_metrics["youden_j"],
+        },
+        "f1": {
+            "threshold": float(threshold_f1),
+            "precision": f1_metrics["precision"],
+            "recall": f1_metrics["recall"],
+            "f1": f1_metrics["f1"],
+        },
+    }
+
+    print(f"  Optimal thresholds:")
+    print(f"    Youden: {threshold_youden:.3f} (J={youden_metrics['youden_j']:.4f})")
+    print(f"    F1: {threshold_f1:.3f} (F1={f1_metrics['f1']:.4f})")
+
+    # Generate plots
+    figures_dir = os.path.join(output_dir, "figures")
+    os.makedirs(figures_dir, exist_ok=True)
+
+    roc_path = os.path.join(figures_dir, f"roc_curve_{strategy_name}.png")
+    plot_roc_curve(
+        None,
+        None,
+        y_probs,
+        y_true_binary,
+        roc_path,
+        title=f"ROC Curve - {strategy_name.replace('_', ' ').title()}",
+    )
+    metrics["plot_roc"] = roc_path
+
+    pr_path = os.path.join(figures_dir, f"pr_curve_{strategy_name}.png")
+    plot_pr_curve(
+        None,
+        None,
+        y_probs,
+        y_true_binary,
+        pr_path,
+        title=f"PR Curve - {strategy_name.replace('_', ' ').title()}",
+    )
+    metrics["plot_pr"] = pr_path
+
+    return metrics
+
+
+def load_raster(path: str) -> Tuple[np.ndarray, dict, Optional[float]]:
     """Load a GeoTIFF raster and return data + metadata."""
     with rasterio.open(path) as src:
         data = src.read(1)  # Read first band
@@ -214,156 +351,70 @@ def evaluate_with_ground_truth(
     y_probs = susc_data[valid_pixels].flatten()
     y_true = gt_data[valid_pixels].flatten()
 
-    # Convert ground truth to binary (assuming class 2 is positive)
-    # Adjust if your ground truth has different encoding
-    y_true_binary = (y_true == 2).astype(int)
+    # CRITICAL FIX: Ground truth has values 1, 2, 3 (low, medium, high)
+    # These were remapped to 0, 1, 2 during training
+    # For ordinal evaluation, we have multiple strategies:
 
-    print(f"\n[evaluate] Valid pixels: {len(y_true):,}")
+    print(f"\n[evaluate] Ground truth value distribution:")
+    unique_gt, counts_gt = np.unique(y_true, return_counts=True)
+    for val, count in zip(unique_gt, counts_gt):
+        print(f"  Value {int(val)}: {count:,} pixels ({100*count/len(y_true):.2f}%)")
+
+    print(f"\n[evaluate] Susceptibility statistics:")
+    print(f"  Min: {y_probs.min():.4f}, Max: {y_probs.max():.4f}")
+    print(f"  Mean: {y_probs.mean():.4f}, Median: {np.median(y_probs):.4f}")
+
+    # Strategy 1: Binary - High risk (class 3) vs rest (classes 1-2)
+    print(f"\n[evaluate] STRATEGY 1: Binary evaluation (High vs Low+Medium)")
+    y_true_binary_high = (y_true == 3).astype(int)
+
+    # Strategy 2: Binary - Medium+High risk (classes 2-3) vs Low (class 1)
+    print(f"[evaluate] STRATEGY 2: Binary evaluation (Medium+High vs Low)")
+    y_true_binary_risk = (y_true >= 2).astype(int)
+
+    # Strategy 3: Ordinal - Treat as ordered categories and compute correlation
+    print(f"[evaluate] STRATEGY 3: Ordinal correlation")
+    from scipy.stats import spearmanr
+
+    corr, pval = spearmanr(y_true, y_probs)
+    print(f"  Spearman's rho: {corr:.4f} (p={pval:.4e})")
+
+    # Evaluate Strategy 1: High vs rest
+    print(f"\n[evaluate] Computing metrics for Strategy 1 (High risk vs rest)...")
     print(
-        f"[evaluate] Positive samples: {np.sum(y_true_binary):,} ({100*np.mean(y_true_binary):.2f}%)"
+        f"  Positive (Class 3): {np.sum(y_true_binary_high):,} ({100*np.mean(y_true_binary_high):.2f}%)"
     )
+    metrics_high = evaluate_binary_strategy(
+        y_true_binary_high, y_probs, threshold, output_dir, "high_vs_rest"
+    )
+
+    # Evaluate Strategy 2: Medium+High vs Low
+    print(f"\n[evaluate] Computing metrics for Strategy 2 (Medium+High vs Low)...")
     print(
-        f"[evaluate] Negative samples: {np.sum(1-y_true_binary):,} ({100*np.mean(1-y_true_binary):.2f}%)"
+        f"  Positive (Classes 2-3): {np.sum(y_true_binary_risk):,} ({100*np.mean(y_true_binary_risk):.2f}%)"
+    )
+    metrics_risk = evaluate_binary_strategy(
+        y_true_binary_risk, y_probs, threshold, output_dir, "risk_vs_low"
     )
 
-    # Check if we have both classes
-    if len(np.unique(y_true_binary)) < 2:
-        print("[evaluate] WARNING: Only one class present in ground truth!")
-        print("[evaluate] Cannot compute meaningful metrics.")
-        return {"error": "Only one class present in ground truth"}
-
-    # Compute metrics
-    print("\n[evaluate] Computing performance metrics...")
-    metrics = {}
-
-    # Threshold-independent metrics
-    try:
-        auroc = roc_auc_score(y_true_binary, y_probs)
-        metrics["auroc"] = float(auroc)
-        print(f"  AUROC: {auroc:.4f}")
-    except Exception as e:
-        print(f"  AUROC: ERROR - {e}")
-        metrics["auroc"] = None
-
-    try:
-        auprc = average_precision_score(y_true_binary, y_probs)
-        metrics["auprc"] = float(auprc)
-        print(f"  AUPRC: {auprc:.4f}")
-    except Exception as e:
-        print(f"  AUPRC: ERROR - {e}")
-        metrics["auprc"] = None
-
-    # Threshold-dependent metrics at specified threshold
-    y_pred = (y_probs >= threshold).astype(int)
-
-    acc = accuracy_score(y_true_binary, y_pred)
-    f1 = f1_score(y_true_binary, y_pred, average="binary", zero_division=0)
-
-    tn, fp, fn, tp = confusion_matrix(y_true_binary, y_pred, labels=[0, 1]).ravel()
-
-    precision = tp / (tp + fp) if (tp + fp) > 0 else 0.0
-    recall = tp / (tp + fn) if (tp + fn) > 0 else 0.0
-    specificity = tn / (tn + fp) if (tn + fp) > 0 else 0.0
-    iou_pos = tp / (tp + fp + fn) if (tp + fp + fn) > 0 else 0.0
-    iou_neg = tn / (tn + fp + fn) if (tn + fp + fn) > 0 else 0.0
-    macro_iou = (iou_pos + iou_neg) / 2.0
-
-    metrics["threshold"] = float(threshold)
-    metrics["accuracy"] = float(acc)
-    metrics["f1"] = float(f1)
-    metrics["precision"] = float(precision)
-    metrics["recall"] = float(recall)
-    metrics["specificity"] = float(specificity)
-    metrics["iou_positive"] = float(iou_pos)
-    metrics["iou_negative"] = float(iou_neg)
-    metrics["macro_iou"] = float(macro_iou)
-
-    print(f"\n  Threshold: {threshold:.3f}")
-    print(f"  Accuracy: {acc:.4f}")
-    print(f"  F1 Score: {f1:.4f}")
-    print(f"  Precision: {precision:.4f}")
-    print(f"  Recall (Sensitivity): {recall:.4f}")
-    print(f"  Specificity: {specificity:.4f}")
-    print(f"  IoU (Positive): {iou_pos:.4f}")
-    print(f"  IoU (Negative): {iou_neg:.4f}")
-    print(f"  Macro IoU: {macro_iou:.4f}")
-
-    # Confusion matrix
-    metrics["confusion_matrix"] = {
-        "true_negative": int(tn),
-        "false_positive": int(fp),
-        "false_negative": int(fn),
-        "true_positive": int(tp),
-    }
-
-    print(f"\n  Confusion Matrix:")
-    print(f"    TN: {tn:,}  FP: {fp:,}")
-    print(f"    FN: {fn:,}  TP: {tp:,}")
-
-    # Find optimal thresholds
-    print("\n[evaluate] Computing optimal thresholds...")
-
-    threshold_youden, youden_metrics = find_optimal_threshold_youden(
-        y_true_binary, y_probs
-    )
-    threshold_f1, f1_metrics = find_optimal_threshold_f1(y_true_binary, y_probs)
-
-    metrics["optimal_thresholds"] = {
-        "youden": {
-            "threshold": float(threshold_youden),
-            "sensitivity": youden_metrics["sensitivity"],
-            "specificity": youden_metrics["specificity"],
-            "youden_j": youden_metrics["youden_j"],
+    # Combine all metrics
+    metrics = {
+        "ground_truth_encoding": {
+            "class_1": "Low landslide probability",
+            "class_2": "Medium landslide probability",
+            "class_3": "High landslide probability",
         },
-        "f1": {
-            "threshold": float(threshold_f1),
-            "precision": f1_metrics["precision"],
-            "recall": f1_metrics["recall"],
-            "f1": f1_metrics["f1"],
+        "ground_truth_distribution": {
+            int(val): {"count": int(count), "fraction": float(count / len(y_true))}
+            for val, count in zip(unique_gt, counts_gt)
         },
+        "ordinal_correlation": {
+            "spearman_rho": float(corr),
+            "p_value": float(pval),
+        },
+        "strategy_1_high_vs_rest": metrics_high,
+        "strategy_2_risk_vs_low": metrics_risk,
     }
-
-    print(f"  Youden's J Optimal Threshold: {threshold_youden:.3f}")
-    print(f"    Sensitivity: {youden_metrics['sensitivity']:.4f}")
-    print(f"    Specificity: {youden_metrics['specificity']:.4f}")
-    print(f"  F1-Optimal Threshold: {threshold_f1:.3f}")
-    print(f"    Precision: {f1_metrics['precision']:.4f}")
-    print(f"    Recall: {f1_metrics['recall']:.4f}")
-    print(f"    F1: {f1_metrics['f1']:.4f}")
-
-    # Generate visualizations
-    print("\n[evaluate] Generating visualization plots...")
-
-    figures_dir = os.path.join(output_dir, "figures")
-    os.makedirs(figures_dir, exist_ok=True)
-
-    plot_paths = {}
-
-    # ROC curve
-    roc_path = os.path.join(figures_dir, "roc_curve.png")
-    plot_roc_curve(
-        None,
-        None,
-        y_probs,
-        y_true_binary,
-        roc_path,
-        title="ROC Curve - Inference Evaluation",
-    )
-    plot_paths["roc_curve"] = roc_path
-
-    # PR curve
-    pr_path = os.path.join(figures_dir, "pr_curve.png")
-    plot_pr_curve(
-        None,
-        None,
-        y_probs,
-        y_true_binary,
-        pr_path,
-        title="Precision-Recall Curve - Inference Evaluation",
-    )
-    plot_paths["pr_curve"] = pr_path
-
-    metrics["plot_paths"] = plot_paths
 
     # Save metrics to JSON
     metrics_path = os.path.join(output_dir, "evaluation_metrics.json")
@@ -532,72 +583,91 @@ def write_evaluation_report(
         f.write("# Landslide Susceptibility Model - Evaluation Report\n\n")
         f.write(f"**Generated:** {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n\n")
 
+        f.write("## Ground Truth Encoding\n\n")
+        if "ground_truth_encoding" in metrics:
+            enc = metrics["ground_truth_encoding"]
+            f.write(f"- **Class 1:** {enc['class_1']}\n")
+            f.write(f"- **Class 2:** {enc['class_2']}\n")
+            f.write(f"- **Class 3:** {enc['class_3']}\n\n")
+
         f.write("## Input Files\n\n")
         f.write(f"- **Susceptibility Map:** `{susceptibility_path}`\n")
         f.write(f"- **Ground Truth:** `{ground_truth_path}`\n\n")
 
-        f.write("## Performance Summary\n\n")
-
-        # Threshold-independent metrics
-        if metrics.get("auroc") is not None:
-            f.write(f"### Threshold-Independent Metrics\n\n")
-            f.write(f"- **AUROC:** {metrics['auroc']:.4f}\n")
-            if metrics.get("auprc") is not None:
-                f.write(f"- **AUPRC:** {metrics['auprc']:.4f}\n")
+        if "ground_truth_distribution" in metrics:
+            f.write("## Ground Truth Distribution\n\n")
+            for cls, info in metrics["ground_truth_distribution"].items():
+                f.write(
+                    f"- **Class {cls}:** {info['count']:,} pixels ({info['fraction']*100:.2f}%)\n"
+                )
             f.write("\n")
 
-        # Threshold-dependent metrics
-        f.write(f"### Metrics at Threshold = {metrics['threshold']:.3f}\n\n")
-        f.write(f"- **Accuracy:** {metrics['accuracy']:.4f}\n")
-        f.write(f"- **F1 Score:** {metrics['f1']:.4f}\n")
-        f.write(f"- **Precision:** {metrics['precision']:.4f}\n")
-        f.write(f"- **Recall (Sensitivity):** {metrics['recall']:.4f}\n")
-        f.write(f"- **Specificity:** {metrics['specificity']:.4f}\n")
-        f.write(f"- **Macro IoU:** {metrics['macro_iou']:.4f}\n\n")
+        if "ordinal_correlation" in metrics:
+            corr = metrics["ordinal_correlation"]
+            f.write("## Ordinal Correlation\n\n")
+            f.write(f"- **Spearman's ρ:** {corr['spearman_rho']:.4f}\n")
+            f.write(f"- **P-value:** {corr['p_value']:.4e}\n\n")
 
-        # Confusion matrix
-        cm = metrics["confusion_matrix"]
-        f.write("### Confusion Matrix\n\n")
-        f.write("```\n")
-        f.write("                 Predicted\n")
-        f.write("               Neg      Pos\n")
-        f.write(
-            f"Actual  Neg   {cm['true_negative']:>8,}  {cm['false_positive']:>8,}\n"
-        )
-        f.write(
-            f"        Pos   {cm['false_negative']:>8,}  {cm['true_positive']:>8,}\n"
-        )
-        f.write("```\n\n")
+        # Strategy 1: High vs Rest
+        if "strategy_1_high_vs_rest" in metrics:
+            f.write("## Strategy 1: High Risk (Class 3) vs Rest (Classes 1-2)\n\n")
+            write_strategy_section(f, metrics["strategy_1_high_vs_rest"])
 
-        # Optimal thresholds
-        if "optimal_thresholds" in metrics:
-            f.write("## Optimal Threshold Recommendations\n\n")
-
-            youden = metrics["optimal_thresholds"]["youden"]
-            f.write(f"### Youden's J Method\n\n")
-            f.write(f"- **Optimal Threshold:** {youden['threshold']:.3f}\n")
-            f.write(f"- **Sensitivity:** {youden['sensitivity']:.4f}\n")
-            f.write(f"- **Specificity:** {youden['specificity']:.4f}\n")
-            f.write(f"- **Youden's J:** {youden['youden_j']:.4f}\n\n")
-
-            f1_opt = metrics["optimal_thresholds"]["f1"]
-            f.write(f"### F1-Maximizing Method\n\n")
-            f.write(f"- **Optimal Threshold:** {f1_opt['threshold']:.3f}\n")
-            f.write(f"- **Precision:** {f1_opt['precision']:.4f}\n")
-            f.write(f"- **Recall:** {f1_opt['recall']:.4f}\n")
-            f.write(f"- **F1 Score:** {f1_opt['f1']:.4f}\n\n")
-
-        # Visualizations
-        if "plot_paths" in metrics:
-            f.write("## Visualizations\n\n")
-            for plot_name, plot_path in metrics["plot_paths"].items():
-                f.write(f"- **{plot_name.replace('_', ' ').title()}:** `{plot_path}`\n")
-            f.write("\n")
+        # Strategy 2: Risk vs Low
+        if "strategy_2_risk_vs_low" in metrics:
+            f.write("## Strategy 2: At-Risk (Classes 2-3) vs Low (Class 1)\n\n")
+            write_strategy_section(f, metrics["strategy_2_risk_vs_low"])
 
         f.write("---\n")
-        f.write("*Generated by src/evaluate.py*\n")
+        f.write(
+            "*Generated by src/evaluate.py (fixed for 3-class ordinal evaluation)*\n"
+        )
 
     print(f"[evaluate] Saved evaluation report to: {report_path}")
+
+
+def write_strategy_section(f, strategy_metrics: Dict) -> None:
+    """Write metrics section for a specific evaluation strategy."""
+    if "error" in strategy_metrics:
+        f.write(f"**Error:** {strategy_metrics['error']}\n\n")
+        return
+
+    if strategy_metrics.get("auroc"):
+        f.write(f"- **AUROC:** {strategy_metrics['auroc']:.4f}\n")
+    if strategy_metrics.get("auprc"):
+        f.write(f"- **AUPRC:** {strategy_metrics['auprc']:.4f}\n")
+
+    f.write(f"\n**At threshold {strategy_metrics.get('threshold', 0.5):.3f}:**\n\n")
+    f.write(f"- Accuracy: {strategy_metrics.get('accuracy', 0):.4f}\n")
+    f.write(f"- F1 Score: {strategy_metrics.get('f1', 0):.4f}\n")
+    f.write(f"- Precision: {strategy_metrics.get('precision', 0):.4f}\n")
+    f.write(f"- Recall: {strategy_metrics.get('recall', 0):.4f}\n")
+    f.write(f"- Specificity: {strategy_metrics.get('specificity', 0):.4f}\n")
+    f.write(f"- Macro IoU: {strategy_metrics.get('macro_iou', 0):.4f}\n\n")
+
+    if "confusion_matrix" in strategy_metrics:
+        cm = strategy_metrics["confusion_matrix"]
+        f.write("**Confusion Matrix:**\n\n")
+        f.write("```\n")
+        f.write(f"TN: {cm['true_negative']:,}  FP: {cm['false_positive']:,}\n")
+        f.write(f"FN: {cm['false_negative']:,}  TP: {cm['true_positive']:,}\n")
+        f.write("```\n\n")
+
+    if "optimal_thresholds" in strategy_metrics:
+        opt = strategy_metrics["optimal_thresholds"]
+        f.write("**Optimal Thresholds:**\n\n")
+
+        if "youden" in opt:
+            y = opt["youden"]
+            f.write(f"- **Youden's J:** {y['threshold']:.3f} (J={y['youden_j']:.4f})\n")
+
+        if "f1" in opt:
+            f1_opt = opt["f1"]
+            f.write(
+                f"- **F1-Optimal:** {f1_opt['threshold']:.3f} (F1={f1_opt['f1']:.4f})\n"
+            )
+
+        f.write("\n")
 
 
 def write_analysis_report(
