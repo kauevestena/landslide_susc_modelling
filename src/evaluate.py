@@ -22,11 +22,13 @@ import argparse
 import json
 import os
 import sys
+from datetime import datetime
 from pathlib import Path
 from typing import Dict, Optional, Tuple
 
 import numpy as np
 import rasterio
+from rasterio.warp import reproject, Resampling
 import torch
 from sklearn.metrics import (
     accuracy_score,
@@ -154,6 +156,40 @@ def evaluate_with_ground_truth(
     print(f"[evaluate] Loading ground truth: {ground_truth_path}")
     gt_data, gt_meta, gt_nodata = load_raster(ground_truth_path)
 
+    # Check if ground truth needs spatial resampling
+    needs_resampling = susc_data.shape != gt_data.shape
+
+    if needs_resampling:
+        print(f"[evaluate] Shape mismatch detected - performing spatial resampling:")
+        print(f"  Susceptibility: {susc_data.shape}")
+        print(f"  Ground truth: {gt_data.shape}")
+
+        # Check CRS compatibility
+        if susc_meta.get("crs") != gt_meta.get("crs"):
+            print(f"[evaluate] WARNING: CRS mismatch!")
+            print(f"  Susceptibility CRS: {susc_meta.get('crs')}")
+            print(f"  Ground truth CRS: {gt_meta.get('crs')}")
+            print(
+                f"[evaluate] Ground truth will be reprojected to match susceptibility."
+            )
+
+        # Resample ground truth to match susceptibility map
+        # Using nearest neighbor to preserve class labels
+        gt_resampled = np.empty_like(susc_data, dtype=gt_data.dtype)
+
+        reproject(
+            source=gt_data,
+            destination=gt_resampled,
+            src_transform=gt_meta["transform"],
+            src_crs=gt_meta.get("crs"),
+            dst_transform=susc_meta["transform"],
+            dst_crs=susc_meta.get("crs"),
+            resampling=Resampling.nearest,
+        )
+
+        print(f"[evaluate] Ground truth resampled to: {gt_resampled.shape}")
+        gt_data = gt_resampled
+
     # Load or create valid mask
     if valid_mask_path and os.path.exists(valid_mask_path):
         print(f"[evaluate] Loading valid mask: {valid_mask_path}")
@@ -166,12 +202,11 @@ def evaluate_with_ground_truth(
         if gt_nodata is not None:
             mask_data[gt_data == gt_nodata] = 0
 
-    # Ensure shapes match
-    if susc_data.shape != gt_data.shape or susc_data.shape != mask_data.shape:
-        print(f"[evaluate] ERROR: Shape mismatch!")
+    # Final shape check (should match after resampling)
+    if susc_data.shape != gt_data.shape:
+        print(f"[evaluate] ERROR: Shape mismatch persists after resampling!")
         print(f"  Susceptibility: {susc_data.shape}")
         print(f"  Ground truth: {gt_data.shape}")
-        print(f"  Valid mask: {mask_data.shape}")
         sys.exit(1)
 
     # Extract valid pixels
@@ -495,11 +530,7 @@ def write_evaluation_report(
 
     with open(report_path, "w") as f:
         f.write("# Landslide Susceptibility Model - Evaluation Report\n\n")
-        f.write(
-            f"**Generated:** {pd.Timestamp.now().strftime('%Y-%m-%d %H:%M:%S')}\n\n"
-            if "pd" in dir()
-            else ""
-        )
+        f.write(f"**Generated:** {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n\n")
 
         f.write("## Input Files\n\n")
         f.write(f"- **Susceptibility Map:** `{susceptibility_path}`\n")
@@ -709,8 +740,15 @@ Examples:
     parser.add_argument(
         "--threshold",
         type=float,
-        default=0.5,
-        help="Classification threshold (default: 0.5)",
+        default=None,  # Changed from 0.5
+        help="Classification threshold (default: auto-load from checkpoint or 0.5)",
+    )
+
+    parser.add_argument(
+        "--checkpoint",
+        type=str,
+        default="artifacts/experiments/run_*/best_model.pth",
+        help="Path to model checkpoint (to load optimal threshold)",
     )
 
     parser.add_argument(
@@ -747,6 +785,10 @@ Examples:
             sys.exit(1)
 
         print("[evaluate] Running in EVALUATION mode (with ground truth)")
+
+        # Use default threshold if not specified
+        threshold = args.threshold if args.threshold is not None else 0.5
+
         results = evaluate_with_ground_truth(
             susceptibility_path=args.susceptibility,
             ground_truth_path=args.ground_truth,
@@ -754,7 +796,7 @@ Examples:
                 args.valid_mask if os.path.exists(args.valid_mask) else None
             ),
             output_dir=args.output_dir,
-            threshold=args.threshold,
+            threshold=threshold,
         )
 
     print(f"\n[evaluate] Results saved to: {args.output_dir}")

@@ -293,7 +293,7 @@ def enable_dropout_layers(module: nn.Module) -> None:
         module.train()
 
 
-def apply_crf(
+def apply_crf_tile(
     probabilities: np.ndarray,
     features: np.ndarray,
     mask: np.ndarray,
@@ -304,10 +304,92 @@ def apply_crf(
     compat_bilateral: float = 10.0,
 ) -> np.ndarray:
     """
+    Apply CRF to a single tile (internal helper for apply_crf).
+
+    Args:
+        probabilities: Class probabilities [num_classes, H, W]
+        features: Input features [C, H, W]
+        mask: Valid pixel mask [H, W]
+        Other params: CRF hyperparameters
+
+    Returns:
+        Refined probabilities [num_classes, H, W]
+    """
+    num_classes, height, width = probabilities.shape
+
+    # Normalize features to 0-255 range for CRF (use first 3 channels if available)
+    if features.shape[0] >= 3:
+        feat_for_crf = features[:3].copy()
+    else:
+        feat_for_crf = np.repeat(features[:1], 3, axis=0)
+
+    # Normalize to 0-255
+    for i in range(feat_for_crf.shape[0]):
+        channel = feat_for_crf[i]
+        channel_min = channel[mask].min() if mask.any() else channel.min()
+        channel_max = channel[mask].max() if mask.any() else channel.max()
+        if channel_max > channel_min:
+            feat_for_crf[i] = (
+                (channel - channel_min) / (channel_max - channel_min) * 255
+            ).astype(np.uint8)
+        else:
+            feat_for_crf[i] = 128
+
+    # Create DenseCRF object
+    d = dcrf.DenseCRF2D(width, height, num_classes)
+
+    # Set unary potentials
+    probs_clipped = np.clip(probabilities, 1e-10, 1.0)
+    probs_clipped = np.ascontiguousarray(probs_clipped, dtype=np.float32)
+    unary = unary_from_softmax(probs_clipped)
+    unary = np.ascontiguousarray(unary, dtype=np.float32)
+    d.setUnaryEnergy(unary)
+
+    # Add pairwise Gaussian potential
+    d.addPairwiseGaussian(
+        sxy=spatial_weight,
+        compat=compat_spatial,
+        kernel=dcrf.DIAG_KERNEL,
+        normalization=dcrf.NORMALIZE_SYMMETRIC,
+    )
+
+    # Add pairwise bilateral potential
+    rgbim = feat_for_crf.transpose(1, 2, 0)
+    rgbim = np.ascontiguousarray(rgbim, dtype=np.uint8)
+    d.addPairwiseBilateral(
+        sxy=spatial_weight,
+        srgb=color_weight,
+        rgbim=rgbim,
+        compat=compat_bilateral,
+        kernel=dcrf.DIAG_KERNEL,
+        normalization=dcrf.NORMALIZE_SYMMETRIC,
+    )
+
+    # Perform inference
+    Q = d.inference(iterations)
+    refined_probs = np.array(Q).reshape((num_classes, height, width))
+    refined_probs[:, ~mask] = 0.0
+
+    return refined_probs
+
+
+def apply_crf(
+    probabilities: np.ndarray,
+    features: np.ndarray,
+    mask: np.ndarray,
+    iterations: int = 5,
+    spatial_weight: float = 3.0,
+    color_weight: float = 3.0,
+    compat_spatial: float = 3.0,
+    compat_bilateral: float = 10.0,
+    tile_size: int = 2048,
+    overlap: int = 128,
+) -> np.ndarray:
+    """
     Apply Conditional Random Field (CRF) post-processing for spatial coherence.
 
-    Uses dense CRF with Gaussian pairwise potentials based on spatial proximity
-    and feature similarity. This helps smooth predictions while respecting edges.
+    Uses dense CRF with Gaussian pairwise potentials. For large rasters, processes
+    in tiles with overlap to manage memory usage.
 
     Args:
         probabilities: Class probabilities [num_classes, H, W]
@@ -318,6 +400,8 @@ def apply_crf(
         color_weight: Feature/color standard deviation for bilateral kernel
         compat_spatial: Compatibility weight for spatial kernel
         compat_bilateral: Compatibility weight for bilateral kernel
+        tile_size: Size of tiles to process (memory management)
+        overlap: Overlap between tiles for blending
 
     Returns:
         Refined probabilities [num_classes, H, W]
@@ -332,68 +416,112 @@ def apply_crf(
     probabilities = np.ascontiguousarray(probabilities, dtype=np.float32)
     features = np.ascontiguousarray(features, dtype=np.float32)
     mask = np.ascontiguousarray(mask, dtype=bool)
-    
+
     num_classes, height, width = probabilities.shape
 
-    # Normalize features to 0-255 range for CRF (use first 3 channels if available)
-    if features.shape[0] >= 3:
-        # Use RGB-like channels (orthophoto if available)
-        feat_for_crf = features[:3].copy()
-    else:
-        # Repeat single channel or use available channels
-        feat_for_crf = np.repeat(features[:1], 3, axis=0)
+    # For small rasters, process directly
+    if height <= tile_size and width <= tile_size:
+        logger.info(f"[apply_crf] Processing full raster ({height}x{width})")
+        return apply_crf_tile(
+            probabilities,
+            features,
+            mask,
+            iterations,
+            spatial_weight,
+            color_weight,
+            compat_spatial,
+            compat_bilateral,
+        )
 
-    # Normalize to 0-255
-    for i in range(feat_for_crf.shape[0]):
-        channel = feat_for_crf[i]
-        channel_min = channel[mask].min() if mask.any() else channel.min()
-        channel_max = channel[mask].max() if mask.any() else channel.max()
-        if channel_max > channel_min:
-            feat_for_crf[i] = (
-                (channel - channel_min) / (channel_max - channel_min) * 255
-            ).astype(np.uint8)
-        else:
-            feat_for_crf[i] = 128  # Neutral gray if constant
-
-    # Create DenseCRF object
-    d = dcrf.DenseCRF2D(width, height, num_classes)
-
-    # Set unary potentials (negative log probabilities)
-    # Ensure C-contiguous arrays for pydensecrf
-    probs_clipped = np.clip(probabilities, 1e-10, 1.0)
-    probs_clipped = np.ascontiguousarray(probs_clipped, dtype=np.float32)
-    unary = unary_from_softmax(probs_clipped)
-    unary = np.ascontiguousarray(unary, dtype=np.float32)
-    d.setUnaryEnergy(unary)
-
-    # Add pairwise Gaussian potential (spatial smoothness)
-    d.addPairwiseGaussian(
-        sxy=spatial_weight,
-        compat=compat_spatial,
-        kernel=dcrf.DIAG_KERNEL,
-        normalization=dcrf.NORMALIZE_SYMMETRIC,
+    # For large rasters, process in tiles with blending
+    logger.info(
+        f"[apply_crf] Processing large raster ({height}x{width}) "
+        f"in tiles of {tile_size}x{tile_size} with {overlap}px overlap"
     )
 
-    # Add pairwise bilateral potential (edge-aware smoothing)
-    # Prepare RGB image in HWC format with proper data type and memory layout
-    rgbim = feat_for_crf.transpose(1, 2, 0)
-    rgbim = np.ascontiguousarray(rgbim, dtype=np.uint8)
-    d.addPairwiseBilateral(
-        sxy=spatial_weight,
-        srgb=color_weight,
-        rgbim=rgbim,
-        compat=compat_bilateral,
-        kernel=dcrf.DIAG_KERNEL,
-        normalization=dcrf.NORMALIZE_SYMMETRIC,
-    )
+    refined_probs = np.zeros_like(probabilities)
+    weight_sum = np.zeros((height, width), dtype=np.float32)
 
-    # Perform mean-field inference
-    Q = d.inference(iterations)
-    refined_probs = np.array(Q).reshape((num_classes, height, width))
+    # Calculate tile positions
+    stride = tile_size - overlap
+    y_positions = list(range(0, height, stride))
+    x_positions = list(range(0, width, stride))
 
-    # Apply mask
+    # Ensure we cover the entire raster
+    if y_positions[-1] + tile_size < height:
+        y_positions.append(height - tile_size)
+    if x_positions[-1] + tile_size < width:
+        x_positions.append(width - tile_size)
+
+    total_tiles = len(y_positions) * len(x_positions)
+    logger.info(f"[apply_crf] Processing {total_tiles} tiles...")
+
+    tile_count = 0
+    for y_start in y_positions:
+        for x_start in x_positions:
+            y_end = min(y_start + tile_size, height)
+            x_end = min(x_start + tile_size, width)
+
+            tile_h = y_end - y_start
+            tile_w = x_end - x_start
+
+            # Extract tile
+            prob_tile = probabilities[:, y_start:y_end, x_start:x_end]
+            feat_tile = features[:, y_start:y_end, x_start:x_end]
+            mask_tile = mask[y_start:y_end, x_start:x_end]
+
+            # Skip tiles with no valid pixels
+            if not mask_tile.any():
+                tile_count += 1
+                continue
+
+            # Process tile
+            refined_tile = apply_crf_tile(
+                prob_tile,
+                feat_tile,
+                mask_tile,
+                iterations,
+                spatial_weight,
+                color_weight,
+                compat_spatial,
+                compat_bilateral,
+            )
+
+            # Create distance-based weight for blending
+            weight = np.ones((tile_h, tile_w), dtype=np.float32)
+            if overlap > 0:
+                # Distance from edge (0 at edge, 1 at center)
+                y_dist = np.minimum(np.arange(tile_h), np.arange(tile_h)[::-1]).astype(
+                    np.float32
+                )
+                x_dist = np.minimum(np.arange(tile_w), np.arange(tile_w)[::-1]).astype(
+                    np.float32
+                )
+
+                # Normalize to [0, 1] within overlap region
+                y_dist = np.minimum(y_dist, overlap) / overlap
+                x_dist = np.minimum(x_dist, overlap) / overlap
+
+                # 2D distance weight
+                weight = np.minimum(y_dist[:, np.newaxis], x_dist[np.newaxis, :])
+
+            # Accumulate weighted predictions
+            refined_probs[:, y_start:y_end, x_start:x_end] += (
+                refined_tile * weight[np.newaxis, :, :]
+            )
+            weight_sum[y_start:y_end, x_start:x_end] += weight
+
+            tile_count += 1
+            if tile_count % 10 == 0 or tile_count == total_tiles:
+                logger.info(f"[apply_crf] Processed {tile_count}/{total_tiles} tiles")
+
+    # Normalize by weights
+    weight_sum_safe = np.where(weight_sum > 0, weight_sum, 1.0)
+    refined_probs /= weight_sum_safe[np.newaxis, :, :]
+    refined_probs[:, weight_sum == 0] = 0.0
     refined_probs[:, ~mask] = 0.0
 
+    logger.info("[apply_crf] Tiled CRF processing complete")
     return refined_probs
 
 
@@ -761,6 +889,8 @@ def run_inference(
             color_weight=crf_config.get("color_weight", 3.0),
             compat_spatial=crf_config.get("compat_spatial", 3.0),
             compat_bilateral=crf_config.get("compat_bilateral", 10.0),
+            tile_size=crf_config.get("tile_size", 2048),
+            overlap=crf_config.get("overlap", 128),
         )
         logger.info("[run_inference] CRF post-processing complete")
 

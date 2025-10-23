@@ -121,6 +121,8 @@ inference:
     color_weight: 3.0  # Bilateral color/feature standard deviation
     compat_spatial: 3.0  # Spatial compatibility weight
     compat_bilateral: 10.0  # Bilateral compatibility weight
+    tile_size: 4096  # Tile size for memory-efficient CRF processing
+    overlap: 2048  # Overlap between CRF tiles for smooth blending
 
 reproducibility:
   seed: 42
