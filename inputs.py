@@ -7,3 +7,4 @@ ground_truth_train = "/home/kaue/data/landslide/training/Ground_truth_train.tif"
 # Test data
 ortophoto_test = "/home/kaue/data/landslide/test/Ortho_test.tif"
 DTM_test = "/home/kaue/data/landslide/test/DTM_4_GNSS-AAT.tif"
+ground_truth_test = "/home/kaue/data/landslide/training/Ground_truth_train.tif"

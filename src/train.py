@@ -9,6 +9,7 @@ import joblib
 import numpy as np
 import torch
 import torch.nn as nn
+import torch.nn.functional as F
 from torch.utils.data import Dataset, DataLoader
 import segmentation_models_pytorch as smp
 from sklearn.metrics import roc_auc_score, average_precision_score
@@ -174,6 +175,71 @@ def compute_metrics_from_confusion(
     return metrics
 
 
+def _collect_logits_and_labels(
+    model: nn.Module, loader: Optional[DataLoader], device: torch.device
+) -> Tuple[Optional[torch.Tensor], Optional[torch.Tensor]]:
+    """Gather logits and labels (ignoring 255) for calibration."""
+    if loader is None or len(loader) == 0:
+        return None, None
+    logits_list: List[torch.Tensor] = []
+    labels_list: List[torch.Tensor] = []
+    model.eval()
+    with torch.no_grad():
+        for tiles, labels in loader:
+            tiles = tiles.to(device)
+            labels = labels.to(device)
+            outputs = model(tiles)
+            mask = labels != IGNORE_INDEX
+            if not mask.any():
+                continue
+            selected_logits = outputs.permute(0, 2, 3, 1)[mask].reshape(
+                -1, outputs.shape[1]
+            )
+            selected_labels = labels[mask].reshape(-1)
+            logits_list.append(selected_logits.cpu())
+            labels_list.append(selected_labels.cpu())
+    if not logits_list:
+        return None, None
+    logits = torch.cat(logits_list, dim=0)
+    labels = torch.cat(labels_list, dim=0)
+    return logits, labels
+
+
+def _optimize_temperature(
+    logits: Optional[torch.Tensor],
+    labels: Optional[torch.Tensor],
+    max_iter: int = 50,
+) -> Tuple[float, float, float]:
+    """Fit temperature scaling to reduce negative log likelihood on validation data."""
+    if logits is None or labels is None or logits.numel() == 0:
+        return 1.0, float("nan"), float("nan")
+
+    device = logits.device
+    log_temperature = torch.zeros(1, device=device, requires_grad=True)
+    optimizer = torch.optim.LBFGS([log_temperature], lr=0.01, max_iter=max_iter)
+
+    logits = logits.to(device)
+    labels = labels.to(device)
+
+    def closure():
+        optimizer.zero_grad()
+        temperature = torch.exp(log_temperature)
+        loss = F.cross_entropy(logits / temperature, labels)
+        loss.backward()
+        return loss
+
+    optimizer.step(closure)
+
+    temperature = float(torch.exp(log_temperature).item())
+    temperature = max(1.0, min(temperature, 1e2))
+
+    with torch.no_grad():
+        nll_before = float(F.cross_entropy(logits, labels).item())
+        nll_after = float(F.cross_entropy(logits / temperature, labels).item())
+
+    return temperature, nll_before, nll_after
+
+
 def evaluate(
     model: nn.Module,
     loader: Optional[DataLoader],
@@ -263,6 +329,7 @@ def train_model(
     best_model_path = os.path.join(experiments_dir, "best_model.pth")
     calibrator_path = os.path.join(experiments_dir, "isotonic_calibrator.joblib")
     metrics_path = os.path.join(experiments_dir, "training_metrics.json")
+    temperature_path = os.path.join(experiments_dir, "temperature_scaling.json")
 
     if os.path.exists(best_model_path) and not force_recreate:
         print(f"[train] Model already exists at {best_model_path}, skipping training")
@@ -276,6 +343,9 @@ def train_model(
             "metrics_path": metrics_path if os.path.exists(metrics_path) else None,
             "channel_metadata_path": train_artifacts.metadata_path,
             "normalization_stats_path": train_artifacts.normalization_stats_path,
+            "temperature_path": (
+                temperature_path if os.path.exists(temperature_path) else None
+            ),
         }
         return training_artifacts
 
@@ -569,6 +639,24 @@ def train_model(
         val_probs, val_labels, test_probs, test_labels, history, figures_dir
     )
 
+    temperature_metrics: Optional[Dict[str, float]] = None
+    if val_loader is not None and len(val_loader) > 0:
+        val_logits, val_label_tensor = _collect_logits_and_labels(
+            model, val_loader, device
+        )
+        if val_logits is not None and val_label_tensor is not None:
+            temperature_value, nll_before, nll_after = _optimize_temperature(
+                val_logits, val_label_tensor
+            )
+            temperature_metrics = {
+                "temperature": temperature_value,
+                "nll_before": nll_before,
+                "nll_after": nll_after,
+                "num_samples": int(val_label_tensor.numel()),
+            }
+            with open(temperature_path, "w") as f:
+                json.dump(temperature_metrics, f, indent=2)
+
     metrics_path = os.path.join(experiments_dir, "training_metrics.json")
     training_report = {
         "history": history,
@@ -583,9 +671,16 @@ def train_model(
             "num_classes": num_classes,
             "dropout_prob": config["model"].get("dropout_prob", 0.0),
         },
+        "temperature_calibration": temperature_metrics,
     }
     with open(metrics_path, "w") as f:
         json.dump(training_report, f, indent=2)
+
+    temperature_artifact = None
+    if temperature_metrics:
+        temperature_artifact = temperature_path
+    elif os.path.exists(temperature_path):
+        temperature_artifact = temperature_path
 
     return {
         "model_path": best_model_path,
@@ -593,6 +688,7 @@ def train_model(
         "metrics_path": metrics_path,
         "channel_metadata_path": train_artifacts.metadata_path,
         "normalization_stats_path": train_artifacts.normalization_stats_path,
+        "temperature_path": temperature_artifact,
     }
 
 

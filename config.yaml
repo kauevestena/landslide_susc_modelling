@@ -19,7 +19,7 @@ inputs:
   test:
     dtm_attr: DTM_test
     ortho_attr: ortophoto_test
-    ground_truth_attr: null
+    ground_truth_attr: ground_truth_test
 
 preprocessing:
   resampling:
@@ -105,17 +105,20 @@ metrics:
 
 inference:
   use_cuda: false  # Set to true only if GPU is compatible (requires CUDA compute capability >= 7.0)
-  window_size: 512
+  window_size: 1024
   overlap: 256
-  tta: true
-  tta_augmentations: 8  # Number of TTA augmentations (0=disabled, 4=basic, 8=full)
-  mc_dropout_iterations: 5
+  tta: false
+  tta_augmentations: 0  # Number of TTA augmentations (0=disabled, 4=basic, 8=full)
+  mc_dropout_iterations: 0
   batch_size: 2
+  smoothing_alpha: 0.5
+  class_breaks: [0.5, 0.7]
+  temperature_override: 2.5
   blending:
     method: gaussian  # Options: gaussian, linear, none
     sigma_factor: 0.3  # For gaussian: sigma = overlap * sigma_factor
   crf:
-    enabled: true
+    enabled: false
     iterations: 5  # Number of CRF inference iterations
     spatial_weight: 3.0  # Bilateral spatial standard deviation
     color_weight: 3.0  # Bilateral color/feature standard deviation
@@ -126,4 +129,3 @@ inference:
 
 reproducibility:
   seed: 42
-

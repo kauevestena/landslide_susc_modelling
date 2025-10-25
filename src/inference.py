@@ -88,7 +88,11 @@ def create_blend_weights(
 
 
 def infer_with_tta(
-    model: nn.Module, tensor: torch.Tensor, tta: bool, num_augmentations: int = 8
+    model: nn.Module,
+    tensor: torch.Tensor,
+    tta: bool,
+    num_augmentations: int = 8,
+    temperature: float = 1.0,
 ) -> np.ndarray:
     """
     Forward a tile through the model with enhanced Test Time Augmentation.
@@ -98,12 +102,16 @@ def infer_with_tta(
         tensor: Input tensor [1, C, H, W]
         tta: Whether to enable TTA
         num_augmentations: Number of augmentations (0=off, 4=basic, 8=full)
+        temperature: Temperature scaling factor applied before softmax
 
     Returns:
         Averaged probability predictions [num_classes, H, W]
     """
+    temp = max(float(temperature), 1e-3)
     with torch.no_grad():
         logits = model(tensor)
+        if temp != 1.0:
+            logits = logits / temp
         probs = torch.softmax(logits, dim=1)
     base = probs.squeeze(0).cpu().numpy()
 
@@ -174,6 +182,8 @@ def infer_with_tta(
     for forward, inverse in transformations[:num_augmentations]:
         with torch.no_grad():
             aug_logits = model(forward(tensor))
+            if temp != 1.0:
+                aug_logits = aug_logits / temp
             aug_probs = torch.softmax(aug_logits, dim=1)
         acc += inverse(aug_probs.squeeze(0).cpu().numpy())
 
@@ -194,6 +204,7 @@ def sliding_window_predict(
     num_tta_augmentations: int,
     min_valid_fraction: float,
     blend_weights: Optional[np.ndarray] = None,
+    temperature: float = 1.0,
 ) -> Tuple[np.ndarray, np.ndarray]:
     """
     Iterate over the raster with overlap and accumulate weighted class probabilities.
@@ -210,6 +221,7 @@ def sliding_window_predict(
         num_tta_augmentations: Number of TTA augmentations
         min_valid_fraction: Minimum valid pixel fraction to process tile
         blend_weights: Optional pre-computed blending weights
+        temperature: Temperature scaling factor applied before softmax
 
     Returns:
         (weighted_prob_sum, weight_sum) both [num_classes, H, W] and [H, W]
@@ -262,9 +274,9 @@ def sliding_window_predict(
                         .unsqueeze(0)
                         .to(device)
                     )
-                    probs = infer_with_tta(model, tensor, tta, num_tta_augmentations)[
-                        :, :h, :w
-                    ]
+                    probs = infer_with_tta(
+                        model, tensor, tta, num_tta_augmentations, temperature
+                    )[:, :h, :w]
 
                     # Apply blending weights
                     if blend_weights is not None:
@@ -691,7 +703,9 @@ def write_model_card(
     lines.extend(
         [
             "\n## Outputs",
-            f'- Susceptibility map: {products["susceptibility"]}',
+            f'- Susceptibility map (ordinal 3-class weighted): {products["susceptibility"]}',
+            f'- High-risk class probability (calibrated): {products.get("susceptibility_high", "N/A")}',
+            f'- Class probabilities (all classes): {products.get("class_probabilities", "N/A")}',
             f'- Uncertainty map: {products["uncertainty"]}',
             f'- Class map: {products["class_map"]}',
             f'- Valid mask: {products["valid_mask"]}',
@@ -699,6 +713,8 @@ def write_model_card(
     )
     if training_artifacts.get("calibrator_path"):
         lines.append(f'- Calibration: {training_artifacts["calibrator_path"]}')
+    if training_artifacts.get("temperature_path"):
+        lines.append(f'- Temperature scaling: {training_artifacts["temperature_path"]}')
 
     card_path = os.path.join(outputs_dir, "model_card.md")
     with open(card_path, "w") as f:
@@ -829,6 +845,38 @@ def run_inference(
     else:
         logger.info("[run_inference] No calibrator found, using raw probabilities")
 
+    temperature = 1.0
+    temperature_path = training_artifacts.get("temperature_path")
+    if temperature_path and os.path.exists(temperature_path):
+        try:
+            with open(temperature_path, "r") as f:
+                temp_payload = json.load(f)
+            temperature = float(temp_payload.get("temperature", 1.0))
+            logger.info(
+                f"[run_inference] Applying temperature scaling with T={temperature:.4f}"
+            )
+        except (json.JSONDecodeError, TypeError, ValueError) as exc:
+            logger.warning(
+                f"[run_inference] Failed to load temperature scaling ({exc}), using T=1.0"
+            )
+            temperature = 1.0
+    else:
+        logger.info("[run_inference] No temperature scaling metadata found (T=1.0)")
+
+    temp_override = config["inference"].get("temperature_override")
+    if temp_override is not None:
+        try:
+            override_value = float(temp_override)
+            if override_value > 0:
+                temperature = override_value
+                logger.info(
+                    f"[run_inference] Overriding temperature with configured value T={temperature:.4f}"
+                )
+        except (TypeError, ValueError):
+            logger.warning(
+                f"[run_inference] Invalid temperature_override value '{temp_override}', keeping T={temperature:.4f}"
+            )
+
     # Load valid mask
     logger.info(f"[run_inference] Loading valid mask from {area.mask_path}")
     with rasterio.open(area.mask_path) as src:
@@ -891,6 +939,7 @@ def run_inference(
         num_tta_augmentations,
         min_valid_fraction,
         blend_weights,
+        temperature,
     )
     logger.info("[run_inference] Main prediction complete")
 
@@ -902,6 +951,23 @@ def run_inference(
     probabilities[:, weight_sum == 0] = 0.0
     probabilities[:, ~valid_mask] = 0.0
     logger.info(f"[run_inference] Probabilities computed, shape: {probabilities.shape}")
+    valid_pixels = (weight_sum > 0) & valid_mask
+
+    smoothing_alpha = float(config["inference"].get("smoothing_alpha", 0.0) or 0.0)
+    normalization_factor = 1.0 + smoothing_alpha * num_classes
+    if smoothing_alpha > 0.0:
+        logger.info(
+            f"[run_inference] Applying probability smoothing (alpha={smoothing_alpha:.3f})"
+        )
+        if np.any(valid_pixels):
+            smoothed = (
+                probabilities[:, valid_pixels] + smoothing_alpha
+            ) / normalization_factor
+            probabilities[:, valid_pixels] = smoothed
+        else:
+            logger.info(
+                "[run_inference] No valid pixels available for smoothing; skipping"
+            )
 
     # Apply CRF post-processing if enabled
     if crf_enabled:
@@ -950,12 +1016,17 @@ def run_inference(
                 num_tta_augmentations,
                 min_valid_fraction,
                 blend_weights,
+                temperature,
             )
             mc_weight_sum_safe = mc_weight_sum.copy()
             mc_weight_sum_safe[mc_weight_sum_safe == 0] = 1.0
             mc_prob = mc_sum / mc_weight_sum_safe[np.newaxis, ...]
             mc_prob[:, mc_weight_sum == 0] = 0.0
             mc_prob[:, ~valid_mask] = 0.0
+            if smoothing_alpha > 0.0 and np.any(valid_pixels):
+                mc_prob[:, valid_pixels] = (
+                    mc_prob[:, valid_pixels] + smoothing_alpha
+                ) / normalization_factor
             mc_maps.append(mc_prob)
 
         mc_stack = np.stack(mc_maps, axis=0)
@@ -1036,16 +1107,32 @@ def run_inference(
     logger.info("[run_inference] Generating class map...")
     positive_binary = (susceptibility >= optimal_threshold).astype(np.uint8)
 
+    class_breaks = config["inference"].get("class_breaks")
     class_map = np.argmax(probabilities, axis=0).astype(np.uint8)
 
     if num_classes == 2:
         class_map = positive_binary
         logger.info("[run_inference] Binary classification: using threshold-based map")
     else:
-        class_map = np.where(positive_binary, positive_class, class_map)
-        logger.info(
-            "[run_inference] Multi-class classification: applied threshold for positive class"
-        )
+        if class_breaks and len(class_breaks) == num_classes - 1:
+            logger.info(
+                f"[run_inference] Using configured class breaks for ordinal mapping: {class_breaks}"
+            )
+            sorted_breaks = sorted(class_breaks)
+            digitized = np.digitize(susceptibility, bins=sorted_breaks).astype(
+                np.uint8
+            )
+            digitized[digitized >= num_classes] = num_classes - 1
+            class_map = digitized
+        else:
+            if class_breaks:
+                logger.warning(
+                    "[run_inference] class_breaks length mismatch; falling back to argmax strategy"
+                )
+            class_map = np.where(positive_binary, positive_class, class_map)
+            logger.info(
+                "[run_inference] Multi-class classification: applied threshold for positive class"
+            )
 
     class_map[~valid_pixels] = 255
     logger.info(
@@ -1135,7 +1222,7 @@ def run_inference(
         area,
         outputs_dir,
         products={
-            "susceptibility_ordinal": susceptibility_path,
+            "susceptibility": susceptibility_path,
             "susceptibility_high": susceptibility_high_path,
             "class_probabilities": class_probs_path,
             "uncertainty": uncertainty_path,
