@@ -22,7 +22,7 @@ IGNORE_INDEX = 255
 
 
 class LandslideDataset(Dataset):
-    """Dataset that loads pre-tiled feature stacks and labels."""
+    """Dataset that loads pre-tiled feature stacks and labels (hard or soft)."""
 
     def __init__(
         self,
@@ -46,6 +46,22 @@ class LandslideDataset(Dataset):
             raise ValueError("Tiles are expected to have shape (C, H, W).")
         self.num_channels = sample.shape[0]
 
+        # Detect if labels are soft (3D) or hard (2D)
+        sample_label_path = os.path.join(
+            self.labels_dir, os.path.basename(self.tile_files[0])
+        )
+        sample_label = np.load(sample_label_path)
+        self.use_soft_labels = sample_label.ndim == 3
+
+        if self.use_soft_labels:
+            print(
+                f"LandslideDataset ({split}): Using SOFT labels (shape: {sample_label.shape})"
+            )
+        else:
+            print(
+                f"LandslideDataset ({split}): Using HARD labels (shape: {sample_label.shape})"
+            )
+
     def __len__(self) -> int:
         return len(self.tile_files)
 
@@ -56,12 +72,25 @@ class LandslideDataset(Dataset):
             raise FileNotFoundError(f"Label not found for tile: {tile_path}")
 
         tile = np.load(tile_path).astype(np.float32)
-        label = np.load(label_path).astype(np.int16)
+
+        if self.use_soft_labels:
+            # Soft labels: shape (num_classes, H, W)
+            label = np.load(label_path).astype(np.float32)
+        else:
+            # Hard labels: shape (H, W)
+            label = np.load(label_path).astype(np.int16)
 
         tile, label = self._apply_augmentations(tile, label)
 
         tile_tensor = torch.from_numpy(tile.copy())
-        label_tensor = torch.from_numpy(label.astype(np.int64))
+
+        if self.use_soft_labels:
+            # Soft labels stay as float32
+            label_tensor = torch.from_numpy(label.copy())
+        else:
+            # Hard labels converted to int64 for CrossEntropyLoss
+            label_tensor = torch.from_numpy(label.astype(np.int64))
+
         return tile_tensor, label_tensor
 
     def _apply_augmentations(
@@ -71,20 +100,36 @@ class LandslideDataset(Dataset):
         if self.split != "train" or not cfg:
             return tile, label
 
+        # Determine if label is soft (3D) or hard (2D)
+        is_soft = label.ndim == 3
+
         if cfg.get("flip_prob", 0) > 0 and np.random.rand() < cfg["flip_prob"]:
             tile = tile[:, :, ::-1]
-            label = label[:, ::-1]
+            if is_soft:
+                label = label[:, :, ::-1]
+            else:
+                label = label[:, ::-1]
+
         if cfg.get("flip_prob", 0) > 0 and np.random.rand() < cfg["flip_prob"]:
             tile = tile[:, ::-1, :]
-            label = label[::-1, :]
+            if is_soft:
+                label = label[:, ::-1, :]
+            else:
+                label = label[::-1, :]
+
         if cfg.get("rotate90", True) and np.random.rand() < 0.5:
             k = np.random.randint(0, 4)
             tile = np.rot90(tile, k=k, axes=(1, 2))
-            label = np.rot90(label, k=k)
+            if is_soft:
+                label = np.rot90(label, k=k, axes=(1, 2))
+            else:
+                label = np.rot90(label, k=k)
+
         noise_std = cfg.get("noise_std", 0.0)
         if noise_std and noise_std > 0:
             noise = np.random.normal(0.0, noise_std, size=tile.shape).astype(np.float32)
             tile = tile + noise
+
         return tile, label
 
 
@@ -105,6 +150,252 @@ class DiceCrossEntropyLoss(nn.Module):
 
     def forward(self, inputs: torch.Tensor, targets: torch.Tensor) -> torch.Tensor:
         return 0.5 * self.ce(inputs, targets) + 0.5 * self.dice(inputs, targets)
+
+
+class SoftDiceCrossEntropyLoss(nn.Module):
+    """
+    Loss function for soft (probabilistic) labels in multi-class segmentation.
+
+    Uses KL Divergence instead of CrossEntropy and adapts Dice loss for soft targets.
+    Handles both soft labels (num_classes, H, W) and masked pixels (all zeros).
+    """
+
+    def __init__(
+        self,
+        num_classes: int,
+        weight: Optional[torch.Tensor] = None,
+        ignore_index: int = IGNORE_INDEX,
+    ):
+        super().__init__()
+        self.num_classes = num_classes
+        self.weight = weight
+        self.ignore_index = (
+            ignore_index  # Not directly used, but kept for API compatibility
+        )
+
+    def forward(self, inputs: torch.Tensor, targets: torch.Tensor) -> torch.Tensor:
+        """
+        Args:
+            inputs: (B, C, H, W) logits from model
+            targets: (B, C, H, W) soft probability targets that sum to 1.0 per pixel
+                     OR (B, H, W) hard class indices (for backward compatibility)
+
+        Returns:
+            Scalar loss value
+        """
+        # Handle both soft and hard targets
+        if targets.ndim == 3:
+            # Hard labels: use standard CE + Dice
+            ce = nn.CrossEntropyLoss(weight=self.weight, ignore_index=self.ignore_index)
+            dice = smp.losses.DiceLoss(
+                mode="multiclass", from_logits=True, ignore_index=self.ignore_index
+            )
+            return 0.5 * ce(inputs, targets) + 0.5 * dice(inputs, targets)
+
+        # Soft labels from here on: targets shape (B, C, H, W)
+        B, C, H, W = inputs.shape
+
+        # Identify valid pixels (where target probabilities sum to > 0)
+        target_sum = targets.sum(dim=1)  # (B, H, W)
+        valid_mask = target_sum > 1e-6  # (B, H, W)
+
+        if not valid_mask.any():
+            # No valid pixels, return zero loss
+            return torch.tensor(0.0, device=inputs.device, requires_grad=True)
+
+        # 1. KL Divergence Loss (replaces CrossEntropy for soft labels)
+        log_probs = F.log_softmax(inputs, dim=1)  # (B, C, H, W)
+
+        # Only compute loss on valid pixels
+        kl_loss = -(targets * log_probs).sum(dim=1)  # (B, H, W)
+        kl_loss = kl_loss[valid_mask].mean()
+
+        # 2. Soft Dice Loss
+        probs = F.softmax(inputs, dim=1)  # (B, C, H, W)
+
+        dice_loss = 0.0
+        smooth = 1e-5
+
+        for c in range(C):
+            pred_c = probs[:, c, :, :]  # (B, H, W)
+            target_c = targets[:, c, :, :]  # (B, H, W)
+
+            # Only compute on valid pixels
+            pred_c_valid = pred_c[valid_mask]
+            target_c_valid = target_c[valid_mask]
+
+            intersection = (pred_c_valid * target_c_valid).sum()
+            union = pred_c_valid.sum() + target_c_valid.sum()
+
+            dice_score = (2.0 * intersection + smooth) / (union + smooth)
+            dice_loss += 1.0 - dice_score
+
+        dice_loss = dice_loss / C
+
+        # Blend losses
+        return 0.5 * kl_loss + 0.5 * dice_loss
+
+
+class FocalDiceLoss(nn.Module):
+    """
+    Combined Focal Loss + Dice Loss for handling severe class imbalance.
+
+    Focal Loss down-weights easy examples and focuses on hard negatives,
+    which is critical for landslide susceptibility where high-risk areas are rare.
+
+    Reference: Lin et al. "Focal Loss for Dense Object Detection" (2017)
+    """
+
+    def __init__(
+        self,
+        num_classes: int,
+        alpha: Optional[torch.Tensor] = None,
+        gamma: float = 2.0,
+        ignore_index: int = IGNORE_INDEX,
+        focal_weight: float = 0.7,
+        dice_weight: float = 0.3,
+    ):
+        """
+        Args:
+            num_classes: Number of classes
+            alpha: Per-class weight tensor (if None, uses uniform weighting)
+            gamma: Focusing parameter (higher = more focus on hard examples)
+            ignore_index: Index to ignore in loss computation
+            focal_weight: Weight for focal loss component (default: 0.7)
+            dice_weight: Weight for dice loss component (default: 0.3)
+        """
+        super().__init__()
+        self.num_classes = num_classes
+        self.alpha = alpha
+        self.gamma = gamma
+        self.ignore_index = ignore_index
+        self.focal_weight = focal_weight
+        self.dice_weight = dice_weight
+
+    def forward(self, inputs: torch.Tensor, targets: torch.Tensor) -> torch.Tensor:
+        """
+        Args:
+            inputs: (B, C, H, W) logits from model
+            targets: (B, H, W) hard class indices OR (B, C, H, W) soft labels
+
+        Returns:
+            Scalar loss value
+        """
+        # Handle both soft and hard labels
+        if targets.ndim == 3:
+            # Hard labels: shape (B, H, W)
+            return self._focal_dice_hard(inputs, targets)
+        else:
+            # Soft labels: shape (B, C, H, W)
+            return self._focal_dice_soft(inputs, targets)
+
+    def _focal_dice_hard(
+        self, inputs: torch.Tensor, targets: torch.Tensor
+    ) -> torch.Tensor:
+        """Focal + Dice loss for hard labels."""
+        B, C, H, W = inputs.shape
+
+        # Compute softmax probabilities
+        probs = F.softmax(inputs, dim=1)  # (B, C, H, W)
+        log_probs = F.log_softmax(inputs, dim=1)
+
+        # Create mask for valid pixels
+        mask = targets != self.ignore_index  # (B, H, W)
+        if not mask.any():
+            return torch.tensor(0.0, device=inputs.device, requires_grad=True)
+
+        # 1. Focal Loss
+        # Gather probabilities of true classes
+        targets_one_hot = F.one_hot(
+            targets.clamp(0, C - 1), num_classes=C
+        )  # (B, H, W, C)
+        targets_one_hot = targets_one_hot.permute(0, 3, 1, 2).float()  # (B, C, H, W)
+
+        # pt = probability of true class
+        pt = (probs * targets_one_hot).sum(dim=1)  # (B, H, W)
+
+        # Focal weight: (1 - pt)^gamma
+        focal_weight = (1.0 - pt) ** self.gamma
+
+        # Cross-entropy loss per pixel
+        ce_loss = -(targets_one_hot * log_probs).sum(dim=1)  # (B, H, W)
+
+        # Apply alpha weighting if provided
+        if self.alpha is not None:
+            alpha_weight = (
+                self.alpha.unsqueeze(0).unsqueeze(-1).unsqueeze(-1) * targets_one_hot
+            ).sum(dim=1)
+            focal_loss = alpha_weight * focal_weight * ce_loss
+        else:
+            focal_loss = focal_weight * ce_loss
+
+        focal_loss = focal_loss[mask].mean()
+
+        # 2. Dice Loss
+        dice_loss = 0.0
+        smooth = 1e-5
+
+        for c in range(C):
+            pred_c = probs[:, c, :, :]
+            target_c = (targets == c).float()
+
+            pred_c_valid = pred_c[mask]
+            target_c_valid = target_c[mask]
+
+            intersection = (pred_c_valid * target_c_valid).sum()
+            union = pred_c_valid.sum() + target_c_valid.sum()
+
+            dice_score = (2.0 * intersection + smooth) / (union + smooth)
+            dice_loss += 1.0 - dice_score
+
+        dice_loss = dice_loss / C
+
+        return self.focal_weight * focal_loss + self.dice_weight * dice_loss
+
+    def _focal_dice_soft(
+        self, inputs: torch.Tensor, targets: torch.Tensor
+    ) -> torch.Tensor:
+        """Focal + Dice loss for soft labels."""
+        B, C, H, W = inputs.shape
+
+        # Identify valid pixels
+        target_sum = targets.sum(dim=1)
+        mask = target_sum > 1e-6
+
+        if not mask.any():
+            return torch.tensor(0.0, device=inputs.device, requires_grad=True)
+
+        probs = F.softmax(inputs, dim=1)
+        log_probs = F.log_softmax(inputs, dim=1)
+
+        # 1. Focal-weighted KL Divergence
+        # Average probability of target distribution
+        pt = (probs * targets).sum(dim=1)  # (B, H, W)
+        focal_weight = (1.0 - pt.clamp(0, 1)) ** self.gamma
+
+        kl_loss = -(targets * log_probs).sum(dim=1)  # (B, H, W)
+        focal_kl = (focal_weight * kl_loss)[mask].mean()
+
+        # 2. Soft Dice Loss
+        dice_loss = 0.0
+        smooth = 1e-5
+
+        for c in range(C):
+            pred_c = probs[:, c, :, :]
+            target_c = targets[:, c, :, :]
+
+            pred_c_valid = pred_c[mask]
+            target_c_valid = target_c[mask]
+
+            intersection = (pred_c_valid * target_c_valid).sum()
+            union = pred_c_valid.sum() + target_c_valid.sum()
+
+            dice_score = (2.0 * intersection + smooth) / (union + smooth)
+            dice_loss += 1.0 - dice_score
+
+        dice_loss = dice_loss / C
+
+        return self.focal_weight * focal_kl + self.dice_weight * dice_loss
 
 
 def compute_class_weights(
@@ -189,13 +480,31 @@ def _collect_logits_and_labels(
             tiles = tiles.to(device)
             labels = labels.to(device)
             outputs = model(tiles)
-            mask = labels != IGNORE_INDEX
-            if not mask.any():
-                continue
-            selected_logits = outputs.permute(0, 2, 3, 1)[mask].reshape(
-                -1, outputs.shape[1]
-            )
-            selected_labels = labels[mask].reshape(-1)
+
+            # Handle both soft and hard labels
+            if labels.ndim == 4:
+                # Soft labels: (B, C, H, W)
+                # Valid pixels are where probabilities sum > 0
+                target_sum = labels.sum(dim=1)  # (B, H, W)
+                mask = target_sum > 1e-6
+                if not mask.any():
+                    continue
+                # Convert soft labels to hard by taking argmax
+                labels_hard = labels.argmax(dim=1)  # (B, H, W)
+                selected_logits = outputs.permute(0, 2, 3, 1)[mask].reshape(
+                    -1, outputs.shape[1]
+                )
+                selected_labels = labels_hard[mask].reshape(-1)
+            else:
+                # Hard labels: (B, H, W)
+                mask = labels != IGNORE_INDEX
+                if not mask.any():
+                    continue
+                selected_logits = outputs.permute(0, 2, 3, 1)[mask].reshape(
+                    -1, outputs.shape[1]
+                )
+                selected_labels = labels[mask].reshape(-1)
+
             logits_list.append(selected_logits.cpu())
             labels_list.append(selected_labels.cpu())
     if not logits_list:
@@ -278,11 +587,26 @@ def evaluate(
 
             probs = torch.softmax(logits, dim=1)
             preds = probs.argmax(dim=1)
-            mask = labels != IGNORE_INDEX
-            if mask.sum() == 0:
-                continue
-            labels_valid = labels[mask]
-            preds_valid = preds[mask]
+
+            # Handle both soft and hard labels
+            if labels.ndim == 4:
+                # Soft labels: (B, C, H, W)
+                # Convert to hard labels by taking argmax, but only on valid pixels
+                target_sum = labels.sum(dim=1)  # (B, H, W)
+                mask = target_sum > 1e-6  # Valid pixels
+                if mask.sum() == 0:
+                    continue
+                labels_hard = labels.argmax(dim=1)  # (B, H, W)
+                labels_valid = labels_hard[mask]
+                preds_valid = preds[mask]
+            else:
+                # Hard labels: (B, H, W)
+                mask = labels != IGNORE_INDEX
+                if mask.sum() == 0:
+                    continue
+                labels_valid = labels[mask]
+                preds_valid = preds[mask]
+
             labels_np = labels_valid.cpu().numpy()
             preds_np = preds_valid.cpu().numpy()
             for i in range(num_classes):
@@ -454,9 +778,35 @@ def train_model(
     if class_weights is not None:
         class_weights = class_weights.to(device)
 
-    loss_fn = DiceCrossEntropyLoss(
-        num_classes, weight=class_weights, ignore_index=IGNORE_INDEX
-    )
+    # Detect if we're using soft labels
+    use_soft_labels = train_dataset.use_soft_labels
+
+    # Choose loss function based on config
+    use_focal_loss = training_cfg.get("use_focal_loss", True)
+    focal_gamma = training_cfg.get("focal_gamma", 2.0)
+
+    if use_focal_loss:
+        print(
+            f"Training with FocalDiceLoss (gamma={focal_gamma}, soft_labels={use_soft_labels})"
+        )
+        loss_fn = FocalDiceLoss(
+            num_classes=num_classes,
+            alpha=class_weights,
+            gamma=focal_gamma,
+            ignore_index=IGNORE_INDEX,
+            focal_weight=0.7,
+            dice_weight=0.3,
+        )
+    elif use_soft_labels:
+        print("Training with SoftDiceCrossEntropyLoss (soft labels)")
+        loss_fn = SoftDiceCrossEntropyLoss(
+            num_classes, weight=class_weights, ignore_index=IGNORE_INDEX
+        )
+    else:
+        print("Training with DiceCrossEntropyLoss (hard labels)")
+        loss_fn = DiceCrossEntropyLoss(
+            num_classes, weight=class_weights, ignore_index=IGNORE_INDEX
+        )
 
     optimizer = torch.optim.AdamW(
         model.parameters(),

@@ -397,6 +397,30 @@ def evaluate_with_ground_truth(
         y_true_binary_risk, y_probs, threshold, output_dir, "risk_vs_low"
     )
 
+    # Strategy 4: Medium vs Low (when Class 3 is absent or rare)
+    metrics_medium = None
+    if 3 not in unique_gt or np.sum(y_true == 3) < 100:
+        print(f"\n[evaluate] STRATEGY 4: Binary evaluation (Medium vs Low)")
+        print(f"  Note: Class 3 absent or rare, evaluating Classes 1 vs 2 only")
+
+        # Filter to only Class 1 and Class 2
+        mask_12 = (y_true == 1) | (y_true == 2)
+        y_true_12 = y_true[mask_12]
+        y_probs_12 = y_probs[mask_12]
+
+        y_true_binary_medium = (y_true_12 == 2).astype(int)
+
+        print(
+            f"  Positive (Class 2): {np.sum(y_true_binary_medium):,} ({100*np.mean(y_true_binary_medium):.2f}%)"
+        )
+        print(
+            f"  Negative (Class 1): {np.sum(y_true_binary_medium == 0):,} ({100*np.mean(y_true_binary_medium == 0):.2f}%)"
+        )
+
+        metrics_medium = evaluate_binary_strategy(
+            y_true_binary_medium, y_probs_12, threshold, output_dir, "medium_vs_low"
+        )
+
     # Combine all metrics
     metrics = {
         "ground_truth_encoding": {
@@ -414,6 +438,7 @@ def evaluate_with_ground_truth(
         },
         "strategy_1_high_vs_rest": metrics_high,
         "strategy_2_risk_vs_low": metrics_risk,
+        "strategy_4_medium_vs_low": metrics_medium if metrics_medium else None,
     }
 
     # Save metrics to JSON
@@ -617,6 +642,14 @@ def write_evaluation_report(
         if "strategy_2_risk_vs_low" in metrics:
             f.write("## Strategy 2: At-Risk (Classes 2-3) vs Low (Class 1)\n\n")
             write_strategy_section(f, metrics["strategy_2_risk_vs_low"])
+
+        # Strategy 4: Medium vs Low (when Class 3 absent)
+        if metrics.get("strategy_4_medium_vs_low"):
+            f.write("## Strategy 4: Medium Risk (Class 2) vs Low Risk (Class 1)\n\n")
+            f.write(
+                "*Note: This strategy evaluates only Classes 1 and 2, excluding Class 3 predictions.*\n\n"
+            )
+            write_strategy_section(f, metrics["strategy_4_medium_vs_low"])
 
         f.write("---\n")
         f.write(

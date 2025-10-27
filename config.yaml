@@ -49,6 +49,11 @@ preprocessing:
     source: worldcover  # Options: worldcover, dynamic_world, none
     worldcover:
       year: 2021  # 2020 or 2021
+  label_smoothing:
+    enabled: true  # RE-ENABLED: Soft labels with higher alpha for better boundaries
+    type: ordinal  # Options: ordinal, gaussian, none
+    alpha: 0.2  # INCREASED: More aggressive smoothing (was 0.1)
+    sigma: 1.0  # For gaussian: spatial smoothing kernel size
     dynamic_world:
       start_date: null  # YYYY-MM-DD format, null for auto (last 6 months)
       end_date: null
@@ -63,7 +68,7 @@ preprocessing:
 
 dataset:
   tile_size: 256  # REDUCED from 512 to create ~4x more tiles
-  tile_overlap: 32  # REDUCED proportionally (was 64)
+  tile_overlap: 128  # REDUCED proportionally (was 64)
   block_grid: [1, 1]
   positive_class: 2
   positive_min_fraction: 0.005  # RELAXED from 0.01 (0.5% instead of 1%)
@@ -79,25 +84,27 @@ model:
   encoder: resnet34
   encoder_weights: imagenet
   out_classes: 3
-  dropout_prob: 0.2
+  dropout_prob: 0.4  # INCREASED: More regularization (was 0.2)
 
 training:
   use_cuda: false  # Set to true only if GPU is compatible (requires CUDA compute capability >= 7.0)
   batch_size: 4
   learning_rate: 0.0003
   weight_decay: 1.0e-4
-  epochs: 30  # INCREASED from 20 since we now have proper validation for early stopping
+  epochs: 40  # INCREASED: More epochs for better convergence (was 30)
   lr_scheduler: cosine
-  early_stopping_patience: 7  # INCREASED from 5 to allow more recovery time
+  early_stopping_patience: 10  # INCREASED: More patience (was 7)
   mixed_precision: true
   gradient_clip_norm: 1.0
+  use_focal_loss: true  # NEW: Enable focal loss for class imbalance
+  focal_gamma: 2.0  # NEW: Focusing parameter (2.0 is standard)
   augmentations:
-    brightness: 0.2
-    contrast: 0.2
-    saturation: 0.2
-    hue: 0.02
-    blur_prob: 0.1
-    noise_std: 0.01
+    brightness: 0.3  # INCREASED: More aggressive (was 0.2)
+    contrast: 0.3  # INCREASED: More aggressive (was 0.2)
+    saturation: 0.3  # INCREASED: More aggressive (was 0.2)
+    hue: 0.05  # INCREASED: More aggressive (was 0.02)
+    blur_prob: 0.2  # INCREASED: More frequent (was 0.1)
+    noise_std: 0.02  # INCREASED: More noise (was 0.01)
     flip_prob: 0.5
 
 metrics:
@@ -111,9 +118,9 @@ inference:
   tta_augmentations: 0  # Number of TTA augmentations (0=disabled, 4=basic, 8=full)
   mc_dropout_iterations: 0
   batch_size: 2
-  smoothing_alpha: 0.5
-  class_breaks: [0.5, 0.7]
-  temperature_override: 2.5
+  smoothing_alpha: 0.1  # ADJUSTED: Gentle probability smoothing (was 0.0 or 0.5)
+  class_breaks: [0.33, 0.67]  # FIXED: Aligned with ordinal scale [0, 1] for 3 equal classes
+  temperature_override: 1.0  # FIXED: Disabled temperature override (was 2.5 - too aggressive)
   blending:
     method: gaussian  # Options: gaussian, linear, none
     sigma_factor: 0.3  # For gaussian: sigma = overlap * sigma_factor

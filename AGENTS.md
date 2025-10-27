@@ -59,8 +59,76 @@ This document orients autonomous and human collaborators to the landslide suscep
 - *Pipeline stuck on old artifacts* → Use `--force_recreate` flag to regenerate all artifacts from scratch: `.venv/bin/python -m src.main_pipeline --force_recreate`.
 - *External LULC download fails* → Check internet connection; for WorldCover verify WMS access, for Dynamic World authenticate via `.venv/bin/earthengine authenticate`.
 - *Channel count mismatch after LULC change* → Switching between K-means and external LULC mid-project requires `--force_recreate` to regenerate all artifacts consistently.
+- *Soft label warnings* → If switching label smoothing settings, use `--force_recreate` to regenerate tiles with consistent label format.
 
-## 7. Communication Templates
+## 7. Soft Label Smoothing (Ordinal Classification)
+
+The pipeline supports **soft label smoothing** for ordinal 3-class landslide susceptibility (low/medium/high risk). Instead of training on hard discrete labels, the model can learn from probability distributions that express uncertainty and ordinal relationships.
+
+### Why Use Soft Labels?
+
+1. **Ordinal awareness**: Encodes that "medium" is between "low" and "high" risk
+2. **Uncertainty expression**: Reflects ambiguity at class boundaries
+3. **Better calibration**: Reduces model overconfidence on uncertain pixels
+4. **Aligned with inference**: Training distribution matches continuous susceptibility output [0,1]
+
+### Configuration
+
+In `config.yaml` under `preprocessing.label_smoothing`:
+
+```yaml
+preprocessing:
+  label_smoothing:
+    enabled: true      # Enable soft label generation
+    type: ordinal      # Options: ordinal (recommended), gaussian, none
+    alpha: 0.1         # For ordinal: smoothing strength (0.0=hard, 0.3=very soft)
+    sigma: 1.0         # For gaussian: spatial smoothing kernel size
+```
+
+### Smoothing Methods
+
+**Ordinal smoothing** (default, recommended):
+- Distributes probability mass to adjacent classes
+- Example with `alpha=0.1`:
+  - Class 0 (low): `[0.95, 0.05, 0.00]`
+  - Class 1 (medium): `[0.05, 0.90, 0.05]`
+  - Class 2 (high): `[0.00, 0.05, 0.95]`
+
+**Gaussian smoothing**:
+- Spatially smooths class boundaries using Gaussian filter
+- Creates soft transitions where classes meet
+- Pixels far from boundaries stay near one-hot
+
+**None**:
+- Standard hard labels (one-hot encoding)
+- Traditional discrete classification
+
+### Implementation Details
+
+- Soft labels are generated in `src/main_pipeline.py:prepare_dataset()`
+- Stored as float32 arrays: shape `(num_classes, H, W)` instead of `(H, W)`
+- Training uses `SoftDiceCrossEntropyLoss` (KL divergence + soft Dice)
+- Validation metrics computed via argmax of soft labels for consistency
+- Dataset summary includes label smoothing metadata
+
+### Switching Between Hard and Soft Labels
+
+**CRITICAL**: Changing `label_smoothing.enabled` or `label_smoothing.type` requires regenerating tiles:
+
+```bash
+.venv/bin/python -m src.main_pipeline --force_recreate
+```
+
+Otherwise, the dataset will have mismatched label formats causing training errors.
+
+### Troubleshooting Soft Labels
+
+- *"Shape mismatch in loss"* → Tiles were created with different smoothing setting; use `--force_recreate`
+- *"Probabilities don't sum to 1.0"* → Check `label_smoothing.alpha` is in valid range [0, 0.5]
+- *Poor convergence* → Try lower `alpha` (0.05) or disable smoothing; some datasets benefit from hard labels
+- *Memory issues* → Soft labels use 3× memory per pixel; reduce `tile_size` or `batch_size` if needed
+
+## 8. Communication Templates
 - **Status update:** Outline stage (preprocess/train/infer), config hash or Git commit, and notable metrics (macro IoU, AUROC, AUPRC).
 - **Change proposal:** State motivation, impacted modules, validation evidence, and rollback plan.
 - **Issue escalation:** Provide reproduction steps, command used, environment summary (OS, Python, PyTorch), and sample log snippets.

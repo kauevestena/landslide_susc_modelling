@@ -1075,6 +1075,44 @@ def prepare_dataset(
     )
     labels[~valid_mask] = 255
 
+    # Apply label smoothing if enabled
+    label_smoothing_cfg = config["preprocessing"].get("label_smoothing", {})
+    use_soft_labels = label_smoothing_cfg.get("enabled", False)
+
+    if use_soft_labels:
+        from src.soft_labels import apply_label_smoothing
+
+        smoothing_type = label_smoothing_cfg.get("type", "ordinal")
+        alpha = label_smoothing_cfg.get("alpha", 0.1)
+        sigma = label_smoothing_cfg.get("sigma", 1.0)
+        num_classes = config["model"]["out_classes"]
+
+        debug_print(
+            f"prepare_dataset: applying {smoothing_type} label smoothing "
+            f"(alpha={alpha}, sigma={sigma})"
+        )
+
+        soft_labels = apply_label_smoothing(
+            labels,
+            smoothing_type=smoothing_type,
+            num_classes=num_classes,
+            alpha=alpha,
+            sigma=sigma,
+            ignore_value=255,
+        )
+
+        # Validate soft labels
+        from src.soft_labels import validate_soft_labels
+
+        try:
+            validate_soft_labels(soft_labels)
+            debug_print("prepare_dataset: soft labels validated successfully")
+        except AssertionError as e:
+            debug_print(f"prepare_dataset: WARNING - soft label validation failed: {e}")
+    else:
+        soft_labels = None
+        debug_print("prepare_dataset: using hard labels (label smoothing disabled)")
+
     os.makedirs(structure_cfg["tiles_dir"], exist_ok=True)
     os.makedirs(structure_cfg["labels_dir"], exist_ok=True)
     os.makedirs(structure_cfg["splits_dir"], exist_ok=True)
@@ -1302,20 +1340,48 @@ def prepare_dataset(
                 os.path.join(split_tile_dir, tile_name),
                 tile_features.astype(np.float32),
             )
-            np.save(
-                os.path.join(split_label_dir, tile_name), tile_labels.astype(np.uint8)
-            )
+
+            # Save either soft or hard labels
+            if use_soft_labels:
+                # Extract soft label tile: shape (num_classes, tile_size, tile_size)
+                tile_soft_labels = soft_labels[
+                    :, y : y + tile_size, x : x + tile_size
+                ].copy()
+                # Zero out invalid pixels
+                tile_soft_labels[:, ~tile_mask] = 0.0
+                np.save(
+                    os.path.join(split_label_dir, tile_name),
+                    tile_soft_labels.astype(np.float32),
+                )
+            else:
+                # Save hard labels as uint8
+                np.save(
+                    os.path.join(split_label_dir, tile_name),
+                    tile_labels.astype(np.uint8),
+                )
+
             tile_records[split_name].append(tile_name)
 
+            # Count pixels per class (works for both hard and soft labels)
             valid_pixels = tile_labels != 255
             if np.any(valid_pixels):
-                unique, counts = np.unique(
-                    tile_labels[valid_pixels], return_counts=True
-                )
-                for cls, count in zip(unique, counts):
-                    class_pixel_counts[str(int(cls))] = class_pixel_counts.get(
-                        str(int(cls)), 0
-                    ) + int(count)
+                if use_soft_labels:
+                    # For soft labels, count fractional class membership
+                    tile_soft_valid = tile_soft_labels[:, valid_pixels]
+                    for cls_idx in range(config["model"]["out_classes"]):
+                        count = float(np.sum(tile_soft_valid[cls_idx]))
+                        class_pixel_counts[str(cls_idx)] = (
+                            class_pixel_counts.get(str(cls_idx), 0) + count
+                        )
+                else:
+                    # For hard labels, count discrete assignments
+                    unique, counts = np.unique(
+                        tile_labels[valid_pixels], return_counts=True
+                    )
+                    for cls, count in zip(unique, counts):
+                        class_pixel_counts[str(int(cls))] = class_pixel_counts.get(
+                            str(int(cls)), 0
+                        ) + int(count)
             ignore_pixel_count += int(np.sum(tile_labels == 255))
 
     splits_path = os.path.join(structure_cfg["splits_dir"], "splits.json")
@@ -1337,6 +1403,14 @@ def prepare_dataset(
                 if isinstance(profile["transform"], Affine)
                 else profile["transform"]
             ),
+        },
+        "label_smoothing": {
+            "enabled": use_soft_labels,
+            "type": (
+                label_smoothing_cfg.get("type", "none") if use_soft_labels else "none"
+            ),
+            "alpha": label_smoothing_cfg.get("alpha", 0.0) if use_soft_labels else 0.0,
+            "sigma": label_smoothing_cfg.get("sigma", 0.0) if use_soft_labels else 0.0,
         },
     }
     with open(summary_path, "w") as f:
