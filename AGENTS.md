@@ -60,6 +60,8 @@ This document orients autonomous and human collaborators to the landslide suscep
 - *External LULC download fails* → Check internet connection; for WorldCover verify WMS access, for Dynamic World authenticate via `.venv/bin/earthengine authenticate`.
 - *Channel count mismatch after LULC change* → Switching between K-means and external LULC mid-project requires `--force_recreate` to regenerate all artifacts consistently.
 - *Soft label warnings* → If switching label smoothing settings, use `--force_recreate` to regenerate tiles with consistent label format.
+- *Test split missing classes* → Increase `dataset.max_split_attempts` in config.yaml (default: 20) or adjust `test_size` to include more spatial blocks. The pipeline automatically retries with different random seeds.
+- *Class imbalance concerns* → **This is inherent to landslide susceptibility**: high-risk areas are naturally rarer than medium-risk, which are rarer than low-risk. The pipeline handles this via focal loss, positive_fraction sampling, and soft label smoothing. Use Cohen's Kappa instead of accuracy to evaluate properly.
 
 ## 7. Soft Label Smoothing (Ordinal Classification)
 

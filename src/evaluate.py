@@ -34,6 +34,7 @@ from sklearn.metrics import (
     accuracy_score,
     auc,
     average_precision_score,
+    cohen_kappa_score,
     confusion_matrix,
     f1_score,
     precision_recall_curve,
@@ -101,6 +102,9 @@ def evaluate_binary_strategy(
     f1 = f1_score(y_true_binary, y_pred, average="binary", zero_division=0)
     tn, fp, fn, tp = confusion_matrix(y_true_binary, y_pred, labels=[0, 1]).ravel()
 
+    # Cohen's Kappa (agreement beyond chance)
+    kappa = cohen_kappa_score(y_true_binary, y_pred)
+
     precision = tp / (tp + fp) if (tp + fp) > 0 else 0.0
     recall = tp / (tp + fn) if (tp + fn) > 0 else 0.0
     specificity = tn / (tn + fp) if (tn + fp) > 0 else 0.0
@@ -113,6 +117,7 @@ def evaluate_binary_strategy(
             "threshold": float(threshold),
             "accuracy": float(acc),
             "f1": float(f1),
+            "cohen_kappa": float(kappa),
             "precision": float(precision),
             "recall": float(recall),
             "specificity": float(specificity),
@@ -129,7 +134,7 @@ def evaluate_binary_strategy(
     )
 
     print(f"  At threshold {threshold:.3f}:")
-    print(f"    Accuracy: {acc:.4f}, F1: {f1:.4f}")
+    print(f"    Accuracy: {acc:.4f}, F1: {f1:.4f}, Cohen's Kappa: {kappa:.4f}")
     print(f"    Precision: {precision:.4f}, Recall: {recall:.4f}")
     print(f"    IoU: {iou_pos:.4f}, Macro IoU: {macro_iou:.4f}")
     print(f"    Confusion: TN={tn:,} FP={fp:,} FN={fn:,} TP={tp:,}")
@@ -673,6 +678,7 @@ def write_strategy_section(f, strategy_metrics: Dict) -> None:
     f.write(f"\n**At threshold {strategy_metrics.get('threshold', 0.5):.3f}:**\n\n")
     f.write(f"- Accuracy: {strategy_metrics.get('accuracy', 0):.4f}\n")
     f.write(f"- F1 Score: {strategy_metrics.get('f1', 0):.4f}\n")
+    f.write(f"- Cohen's Kappa: {strategy_metrics.get('cohen_kappa', 0):.4f}\n")
     f.write(f"- Precision: {strategy_metrics.get('precision', 0):.4f}\n")
     f.write(f"- Recall: {strategy_metrics.get('recall', 0):.4f}\n")
     f.write(f"- Specificity: {strategy_metrics.get('specificity', 0):.4f}\n")

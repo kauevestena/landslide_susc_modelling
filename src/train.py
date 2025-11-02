@@ -21,6 +21,91 @@ from src.visualize import generate_all_plots
 IGNORE_INDEX = 255
 
 
+class SpatialAttentionModule(nn.Module):
+    """
+    Spatial Attention Module (SAM) for focusing on important spatial regions.
+
+    Computes attention weights across spatial dimensions to emphasize
+    informative regions for landslide detection. Particularly useful for
+    Class 1 (medium-risk) boundary detection.
+
+    Architecture:
+    - Channel pooling (max + avg) → Conv 7×7 → Sigmoid
+    - Output: spatial attention map [H, W]
+    """
+
+    def __init__(self, kernel_size: int = 7):
+        super(SpatialAttentionModule, self).__init__()
+
+        assert kernel_size in (3, 7), "Kernel size must be 3 or 7"
+        padding = 3 if kernel_size == 7 else 1
+
+        # Convolutional layer to learn spatial attention
+        self.conv = nn.Conv2d(
+            in_channels=2,  # Max-pool + Avg-pool features
+            out_channels=1,
+            kernel_size=kernel_size,
+            padding=padding,
+            bias=False,
+        )
+        self.sigmoid = nn.Sigmoid()
+
+    def forward(self, x):
+        """
+        Args:
+            x: Input feature map [B, C, H, W]
+
+        Returns:
+            Attention-weighted features [B, C, H, W]
+        """
+        # Channel-wise pooling
+        max_pool = torch.max(x, dim=1, keepdim=True)[0]  # [B, 1, H, W]
+        avg_pool = torch.mean(x, dim=1, keepdim=True)  # [B, 1, H, W]
+
+        # Concatenate pooled features
+        pooled = torch.cat([max_pool, avg_pool], dim=1)  # [B, 2, H, W]
+
+        # Compute attention weights
+        attention = self.conv(pooled)  # [B, 1, H, W]
+        attention = self.sigmoid(attention)  # [B, 1, H, W]
+
+        # Apply attention
+        return x * attention
+
+
+class UnetWithAttention(nn.Module):
+    """
+    U-Net wrapper with Spatial Attention Module.
+
+    Adds spatial attention to the deepest encoder features before decoding.
+    Helps focus on important terrain features for landslide detection.
+    """
+
+    def __init__(self, base_model: nn.Module):
+        super(UnetWithAttention, self).__init__()
+        self.base_model = base_model
+        self.attention = SpatialAttentionModule(kernel_size=7)
+
+        # Copy segmentation_head attribute for compatibility
+        self.segmentation_head = base_model.segmentation_head
+
+    def forward(self, x):
+        # Get encoder features
+        features = self.base_model.encoder(x)
+
+        # Apply spatial attention to the deepest feature map (bottleneck)
+        # features is a list: [stage0, stage1, stage2, stage3, stage4, bottleneck]
+        attended_features = list(features)
+        attended_features[-1] = self.attention(features[-1])
+
+        # Pass attended features to decoder (as a list, not unpacked)
+        decoder_output = self.base_model.decoder(attended_features)
+
+        # Apply segmentation head
+        output = self.base_model.segmentation_head(decoder_output)
+        return output
+
+
 class LandslideDataset(Dataset):
     """Dataset that loads pre-tiled feature stacks and labels (hard or soft)."""
 
@@ -398,6 +483,194 @@ class FocalDiceLoss(nn.Module):
         return self.focal_weight * focal_kl + self.dice_weight * dice_loss
 
 
+class CORALLoss(nn.Module):
+    """
+    Consistent Rank Logits (CORAL) loss for ordinal regression.
+
+    For 3-class ordinal classification (Low=0, Medium=1, High=2),
+    CORAL models cumulative probabilities:
+      P(Y > 0) = P(Medium or High)
+      P(Y > 1) = P(High)
+
+    This explicitly enforces the ordinal constraint that Low < Medium < High,
+    reducing confusion between distant classes (e.g., Low vs High).
+
+    Reference: Cao et al. "Rank Consistent Ordinal Regression for Neural Networks
+               with Application to Age Estimation" (2020)
+    """
+
+    def __init__(self, num_classes: int = 3, ignore_index: int = IGNORE_INDEX):
+        """
+        Args:
+            num_classes: Number of ordinal classes (default: 3 for Low/Med/High)
+            ignore_index: Index to ignore in loss computation
+        """
+        super().__init__()
+        self.num_classes = num_classes
+        self.ignore_index = ignore_index
+        # For 3 classes, we have 2 binary cumulative tasks: P(Y>0), P(Y>1)
+        self.num_thresholds = num_classes - 1
+
+    def forward(self, logits: torch.Tensor, targets: torch.Tensor) -> torch.Tensor:
+        """
+        Args:
+            logits: (B, C, H, W) logits from model
+            targets: (B, H, W) hard class indices (0, 1, 2)
+
+        Returns:
+            Scalar CORAL loss
+        """
+        B, C, H, W = logits.shape
+
+        # Create mask for valid pixels
+        mask = targets != self.ignore_index
+        if not mask.any():
+            return torch.tensor(0.0, device=logits.device, requires_grad=True)
+
+        # Convert logits to cumulative logits
+        # For 3 classes: cumulative_logits[0] = P(Y > 0), cumulative_logits[1] = P(Y > 1)
+        cumulative_logits = self._get_cumulative_logits(
+            logits
+        )  # (B, num_thresholds, H, W)
+
+        # Create cumulative labels
+        # targets: [0, 1, 2] -> cumulative: [[0, 0], [1, 0], [1, 1]]
+        cumulative_labels = self._get_cumulative_labels(
+            targets
+        )  # (B, num_thresholds, H, W)
+
+        # Compute binary cross-entropy for each cumulative task
+        loss = 0.0
+        for k in range(self.num_thresholds):
+            logits_k = cumulative_logits[:, k, :, :]  # (B, H, W)
+            labels_k = cumulative_labels[:, k, :, :].float()  # (B, H, W)
+
+            # Binary cross-entropy with logits
+            bce = F.binary_cross_entropy_with_logits(
+                logits_k[mask], labels_k[mask], reduction="mean"
+            )
+            loss += bce
+
+        # Average over all cumulative tasks
+        return loss / self.num_thresholds
+
+    def _get_cumulative_logits(self, logits: torch.Tensor) -> torch.Tensor:
+        """
+        Convert class logits to cumulative logits.
+
+        For 3 classes [Low, Med, High]:
+          cumulative_logits[0] = log(P(Med) + P(High)) / P(Low)
+                                = log(1 - P(Low))
+          cumulative_logits[1] = log(P(High)) / (P(Low) + P(Med))
+
+        Simplified approach: Use logsumexp trick
+        """
+        B, C, H, W = logits.shape
+        cumulative = []
+
+        for k in range(self.num_thresholds):
+            # P(Y > k) = sum of probabilities for classes > k
+            # Using logsumexp for numerical stability
+            logits_greater = logits[:, k + 1 :, :, :]  # Classes > k
+            if logits_greater.shape[1] > 0:
+                # log(sum(exp(logits))) for classes > k
+                cum_logit = torch.logsumexp(logits_greater, dim=1, keepdim=True)
+                cumulative.append(cum_logit)
+
+        return torch.cat(cumulative, dim=1)  # (B, num_thresholds, H, W)
+
+    def _get_cumulative_labels(self, targets: torch.Tensor) -> torch.Tensor:
+        """
+        Convert ordinal class labels to cumulative labels.
+
+        For targets [0, 1, 2]:
+          Class 0 (Low):    [0, 0] (not > 0, not > 1)
+          Class 1 (Medium): [1, 0] (yes > 0, not > 1)
+          Class 2 (High):   [1, 1] (yes > 0, yes > 1)
+        """
+        B, H, W = targets.shape
+        cumulative = torch.zeros(
+            (B, self.num_thresholds, H, W), dtype=torch.long, device=targets.device
+        )
+
+        for k in range(self.num_thresholds):
+            # Label is 1 if target > k, else 0
+            cumulative[:, k, :, :] = (targets > k).long()
+
+        return cumulative
+
+
+class CombinedOrdinalLoss(nn.Module):
+    """
+    Combined loss: FocalDice + CORAL for ordinal 3-class segmentation.
+
+    FocalDice handles class imbalance and spatial consistency.
+    CORAL enforces ordinal relationships (Low < Medium < High).
+
+    This combination addresses both the severe class imbalance in landslide
+    susceptibility (Low: 91%, Medium: 2.6%, High: 5.7%) and the ordinal
+    nature of risk levels.
+    """
+
+    def __init__(
+        self,
+        num_classes: int = 3,
+        alpha: Optional[torch.Tensor] = None,
+        gamma: float = 2.0,
+        ignore_index: int = IGNORE_INDEX,
+        focal_weight: float = 0.7,
+        dice_weight: float = 0.3,
+        coral_weight: float = 0.3,
+    ):
+        """
+        Args:
+            num_classes: Number of classes (3 for Low/Med/High)
+            alpha: Per-class weights for focal loss
+            gamma: Focal loss focusing parameter
+            ignore_index: Index to ignore
+            focal_weight: Weight for focal component (default: 0.7)
+            dice_weight: Weight for dice component (default: 0.3)
+            coral_weight: Weight for CORAL component (default: 0.3)
+        """
+        super().__init__()
+        self.focal_dice = FocalDiceLoss(
+            num_classes=num_classes,
+            alpha=alpha,
+            gamma=gamma,
+            ignore_index=ignore_index,
+            focal_weight=focal_weight,
+            dice_weight=dice_weight,
+        )
+        self.coral = CORALLoss(num_classes=num_classes, ignore_index=ignore_index)
+        self.coral_weight = coral_weight
+
+    def forward(self, inputs: torch.Tensor, targets: torch.Tensor) -> torch.Tensor:
+        """
+        Args:
+            inputs: (B, C, H, W) logits
+            targets: (B, H, W) hard labels or (B, C, H, W) soft labels
+
+        Returns:
+            Combined loss value
+        """
+        # FocalDice handles both hard and soft labels
+        focal_dice_loss = self.focal_dice(inputs, targets)
+
+        # CORAL requires hard labels
+        if targets.ndim == 4:
+            # Convert soft labels to hard by argmax
+            targets_hard = torch.argmax(targets, dim=1)
+        else:
+            targets_hard = targets
+
+        coral_loss = self.coral(inputs, targets_hard)
+
+        # Combined loss: FocalDice (base) + CORAL (ordinal constraint)
+        total_loss = focal_dice_loss + self.coral_weight * coral_loss
+
+        return total_loss
+
+
 def compute_class_weights(
     summary_path: str, num_classes: int
 ) -> Optional[torch.Tensor]:
@@ -764,6 +1037,12 @@ def train_model(
         classes=num_classes,
     )
 
+    # V2.5: Add spatial attention if enabled
+    use_attention = config["model"].get("attention", False)
+    if use_attention:
+        print("Wrapping model with Spatial Attention Module...")
+        model = UnetWithAttention(model)
+
     dropout_prob = config["model"].get("dropout_prob", 0.0)
     if dropout_prob and dropout_prob > 0:
         model.segmentation_head = nn.Sequential(
@@ -772,22 +1051,50 @@ def train_model(
 
     model = model.to(device)
 
-    class_weights = compute_class_weights(
-        os.path.join(splits_dir, "dataset_summary.json"), num_classes
-    )
-    if class_weights is not None:
-        class_weights = class_weights.to(device)
+    # Use config class weights if provided, otherwise compute from data
+    config_weights = training_cfg.get("class_weights", None)
+    if config_weights is not None:
+        print(f"Using configured class weights: {config_weights}")
+        class_weights = torch.tensor(config_weights, dtype=torch.float32).to(device)
+    else:
+        print("Computing class weights from dataset summary...")
+        class_weights = compute_class_weights(
+            os.path.join(splits_dir, "dataset_summary.json"), num_classes
+        )
+        if class_weights is not None:
+            class_weights = class_weights.to(device)
+            print(f"Computed class weights: {class_weights.cpu().tolist()}")
 
     # Detect if we're using soft labels
     use_soft_labels = train_dataset.use_soft_labels
 
     # Choose loss function based on config
     use_focal_loss = training_cfg.get("use_focal_loss", True)
+    use_ordinal_loss = training_cfg.get("use_ordinal_loss", False)
     focal_gamma = training_cfg.get("focal_gamma", 2.0)
+    coral_weight = training_cfg.get("coral_weight", 0.3)
 
-    if use_focal_loss:
+    if use_focal_loss and use_ordinal_loss:
+        print(f"Training with CombinedOrdinalLoss (FocalDice + CORAL)")
+        print(f"  Focal gamma: {focal_gamma}, CORAL weight: {coral_weight}")
+        print(
+            f"  Class weights (alpha): {class_weights.cpu().tolist() if class_weights is not None else 'None'}"
+        )
+        loss_fn = CombinedOrdinalLoss(
+            num_classes=num_classes,
+            alpha=class_weights,
+            gamma=focal_gamma,
+            ignore_index=IGNORE_INDEX,
+            focal_weight=0.7,
+            dice_weight=0.3,
+            coral_weight=coral_weight,
+        )
+    elif use_focal_loss:
         print(
             f"Training with FocalDiceLoss (gamma={focal_gamma}, soft_labels={use_soft_labels})"
+        )
+        print(
+            f"  Class weights (alpha): {class_weights.cpu().tolist() if class_weights is not None else 'None'}"
         )
         loss_fn = FocalDiceLoss(
             num_classes=num_classes,
@@ -821,7 +1128,11 @@ def train_model(
         )
 
     use_amp = training_cfg.get("mixed_precision", False) and device.type == "cuda"
-    scaler = torch.cuda.amp.GradScaler(enabled=use_amp)
+    scaler = (
+        torch.amp.GradScaler("cuda", enabled=use_amp)
+        if device.type == "cuda"
+        else torch.amp.GradScaler("cpu", enabled=use_amp)
+    )
 
     best_score = -float("inf")
     best_epoch = -1

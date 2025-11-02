@@ -6,6 +6,7 @@ PySAGA-cmd
 geopandas
 scikit-image
 scikit-learn
+imbalanced-learn  # NEW V2.5: SMOTE for synthetic minority oversampling
 torch
 torchvision
 segmentation-models-pytorch

@@ -57,6 +57,16 @@ from scipy.ndimage import (
     binary_erosion,
 )
 
+# V2.5: Import SMOTE for synthetic minority oversampling
+try:
+    from imblearn.over_sampling import SMOTE
+
+    SMOTE_AVAILABLE = True
+except ImportError:
+    SMOTE_AVAILABLE = False
+    print("WARNING: imbalanced-learn not installed. SMOTE will be unavailable.")
+    print("Install with: pip install imbalanced-learn")
+
 from src.train import train_model
 from src.inference import run_inference
 
@@ -1141,6 +1151,37 @@ def prepare_dataset(
     val_size = dataset_cfg.get("val_size", 0.15)
     random_state = dataset_cfg.get("random_state", 42)
 
+    # Helper function to check if test split contains all classes
+    def check_test_has_all_classes(test_block_list, num_classes):
+        """Check if test blocks contain tiles with all classes."""
+        classes_found = set()
+        positive_class = dataset_cfg.get("positive_class", num_classes - 1)
+        positive_min_fraction = dataset_cfg.get("positive_min_fraction", 0.02)
+
+        for y0, y1, x0, x1 in test_block_list:
+            for y in range(y0, max(y1 - tile_size + 1, y0), stride):
+                for x in range(x0, max(x1 - tile_size + 1, x0), stride):
+                    y_end = y + tile_size
+                    x_end = x + tile_size
+                    if y_end > height or x_end > width:
+                        continue
+                    tile_mask = valid_mask[y:y_end, x:x_end]
+                    if tile_mask.mean() < min_valid_fraction:
+                        continue
+                    tile_labels = labels[y:y_end, x:x_end]
+                    valid_pixels = tile_labels != 255
+                    if not np.any(valid_pixels):
+                        continue
+                    # Check which classes are present in this tile
+                    unique_classes = np.unique(tile_labels[valid_pixels])
+                    classes_found.update(int(c) for c in unique_classes if c != 255)
+
+                    # Early exit if all classes found
+                    if len(classes_found) >= num_classes:
+                        return True, classes_found
+
+        return len(classes_found) >= num_classes, classes_found
+
     if len(blocks) < 2 or test_size <= 0:
         train_blocks = blocks
         test_blocks = []
@@ -1150,9 +1191,48 @@ def prepare_dataset(
         effective_test_size = max(test_size, min_fraction)
         if effective_test_size >= 1.0:
             effective_test_size = max(min_fraction, min(0.5, 1.0 - min_fraction))
-        train_blocks, test_blocks = train_test_split(
-            blocks, test_size=effective_test_size, random_state=random_state
-        )
+
+        # Try multiple random splits to ensure test has all classes
+        max_attempts = dataset_cfg.get("max_split_attempts", 10)
+        num_classes = config["model"]["out_classes"]
+        best_split = None
+        best_classes_found = set()
+
+        for attempt in range(max_attempts):
+            current_seed = random_state + attempt
+            train_blocks_attempt, test_blocks_attempt = train_test_split(
+                blocks, test_size=effective_test_size, random_state=current_seed
+            )
+
+            has_all_classes, classes_found = check_test_has_all_classes(
+                test_blocks_attempt, num_classes
+            )
+
+            if has_all_classes:
+                debug_print(
+                    f"prepare_dataset: found valid test split on attempt {attempt + 1} "
+                    f"with all {num_classes} classes: {sorted(classes_found)}"
+                )
+                train_blocks = train_blocks_attempt
+                test_blocks = test_blocks_attempt
+                break
+
+            # Track best attempt even if not perfect
+            if len(classes_found) > len(best_classes_found):
+                best_classes_found = classes_found
+                best_split = (train_blocks_attempt, test_blocks_attempt)
+        else:
+            # Max attempts reached without finding all classes
+            debug_print(
+                f"prepare_dataset: WARNING - could not find test split with all {num_classes} classes "
+                f"after {max_attempts} attempts. Best split found classes: {sorted(best_classes_found)}"
+            )
+            if best_split:
+                train_blocks, test_blocks = best_split
+            else:
+                train_blocks, test_blocks = train_test_split(
+                    blocks, test_size=effective_test_size, random_state=random_state
+                )
 
     if not train_blocks:
         train_blocks = blocks
@@ -1384,9 +1464,400 @@ def prepare_dataset(
                         ) + int(count)
             ignore_pixel_count += int(np.sum(tile_labels == 255))
 
+    # Class 1 (Medium-Risk) Oversampling for Training Set
+    # Addresses severe class imbalance: Class 1 is only ~2.65% of data
+    # Strategy: Duplicate Class 1-rich tiles to increase representation to ~5%
+    oversample_class = dataset_cfg.get("oversample_class", None)
+    oversample_target_fraction = dataset_cfg.get("oversample_target_fraction", 0.05)
+
+    if oversample_class is not None and "train" in split_positions:
+        debug_print(f"prepare_dataset: Applying Class {oversample_class} oversampling")
+
+        train_tile_dir = os.path.join(structure_cfg["tiles_dir"], "train")
+        train_label_dir = os.path.join(structure_cfg["labels_dir"], "train")
+
+        # Identify tiles rich in target class
+        class_rich_tiles = []
+        for tile_name in tile_records["train"]:
+            tile_label_path = os.path.join(train_label_dir, tile_name)
+            tile_labels_arr = np.load(tile_label_path)
+
+            # Calculate fraction of target class
+            if use_soft_labels:
+                # Soft labels: shape (num_classes, H, W)
+                class_fraction = np.mean(tile_labels_arr[oversample_class])
+            else:
+                # Hard labels: shape (H, W)
+                valid_pixels = tile_labels_arr != 255
+                if np.any(valid_pixels):
+                    class_fraction = np.mean(
+                        tile_labels_arr[valid_pixels] == oversample_class
+                    )
+                else:
+                    class_fraction = 0.0
+
+            # Consider "rich" if class comprises >5% of tile
+            if class_fraction > 0.05:
+                class_rich_tiles.append((tile_name, class_fraction))
+
+        if class_rich_tiles:
+            # Sort by class fraction (most rich first)
+            class_rich_tiles.sort(key=lambda x: x[1], reverse=True)
+
+            # Calculate current and target counts
+            current_train_count = len(tile_records["train"])
+            current_class_pixels = class_pixel_counts.get(str(oversample_class), 0)
+            total_pixels = sum(class_pixel_counts.values())
+            current_fraction = current_class_pixels / max(total_pixels, 1)
+
+            # Determine how many duplicates needed
+            # Target: oversample_target_fraction of dataset
+            target_class_pixels = oversample_target_fraction * total_pixels
+            deficit_pixels = max(0, target_class_pixels - current_class_pixels)
+
+            debug_print(
+                f"  Current Class {oversample_class} fraction: {current_fraction:.4f} "
+                f"({current_class_pixels:.0f} / {total_pixels:.0f} pixels)"
+            )
+            debug_print(
+                f"  Target Class {oversample_class} fraction: {oversample_target_fraction:.4f} "
+                f"({target_class_pixels:.0f} pixels)"
+            )
+            debug_print(f"  Deficit: {deficit_pixels:.0f} pixels")
+            debug_print(
+                f"  Found {len(class_rich_tiles)} Class {oversample_class}-rich tiles"
+            )
+
+            # Duplicate tiles until deficit is filled
+            duplicates_added = 0
+            pixels_added = 0
+
+            for tile_name, class_frac in class_rich_tiles:
+                if pixels_added >= deficit_pixels:
+                    break
+
+                # Load original tile
+                tile_feature_path = os.path.join(train_tile_dir, tile_name)
+                tile_label_path = os.path.join(train_label_dir, tile_name)
+                tile_features = np.load(tile_feature_path)
+                tile_labels_arr = np.load(tile_label_path)
+
+                # Create duplicate with different name
+                base_name = tile_name.replace(".npy", "")
+                dup_name = f"{base_name}_dup{duplicates_added}.npy"
+
+                # Save duplicate
+                np.save(os.path.join(train_tile_dir, dup_name), tile_features)
+                np.save(os.path.join(train_label_dir, dup_name), tile_labels_arr)
+                tile_records["train"].append(dup_name)
+
+                # Update pixel counts
+                if use_soft_labels:
+                    valid_mask_dup = tile_labels_arr.sum(axis=0) > 1e-6
+                    tile_soft_valid = tile_labels_arr[:, valid_mask_dup]
+                    for cls_idx in range(config["model"]["out_classes"]):
+                        count = float(np.sum(tile_soft_valid[cls_idx]))
+                        class_pixel_counts[str(cls_idx)] += count
+                        if cls_idx == oversample_class:
+                            pixels_added += count
+                else:
+                    valid_pixels = tile_labels_arr != 255
+                    if np.any(valid_pixels):
+                        unique, counts = np.unique(
+                            tile_labels_arr[valid_pixels], return_counts=True
+                        )
+                        for cls, count in zip(unique, counts):
+                            class_pixel_counts[str(int(cls))] += int(count)
+                            if int(cls) == oversample_class:
+                                pixels_added += int(count)
+
+                duplicates_added += 1
+
+            # Final stats
+            total_pixels_after = sum(class_pixel_counts.values())
+            final_class_pixels = class_pixel_counts.get(str(oversample_class), 0)
+            final_fraction = final_class_pixels / max(total_pixels_after, 1)
+
+            debug_print(
+                f"  ✓ Added {duplicates_added} duplicate tiles (+{pixels_added:.0f} Class {oversample_class} pixels)"
+            )
+            debug_print(
+                f"  Final Class {oversample_class} fraction: {final_fraction:.4f} "
+                f"({final_class_pixels:.0f} / {total_pixels_after:.0f} pixels)"
+            )
+        else:
+            debug_print(
+                f"  WARNING: No Class {oversample_class}-rich tiles found for oversampling"
+            )
+
+    # V2.5: SMOTE Synthetic Data Generation
+    # Generates synthetic Class 1 examples to reach target fraction
+    use_smote = dataset_cfg.get("use_smote", False)
+    smote_k_neighbors = dataset_cfg.get("smote_k_neighbors", 5)
+
+    if (
+        use_smote
+        and oversample_class is not None
+        and "train" in split_positions
+        and SMOTE_AVAILABLE
+    ):
+        debug_print(f"prepare_dataset: Applying SMOTE for Class {oversample_class}")
+
+        train_tile_dir = os.path.join(structure_cfg["tiles_dir"], "train")
+        train_label_dir = os.path.join(structure_cfg["labels_dir"], "train")
+
+        # Check if we need more samples
+        current_class_pixels = class_pixel_counts.get(str(oversample_class), 0)
+        total_pixels = sum(class_pixel_counts.values())
+        current_fraction = current_class_pixels / max(total_pixels, 1)
+
+        if current_fraction < oversample_target_fraction:
+            debug_print(
+                f"  Current fraction: {current_fraction:.4f}, Target: {oversample_target_fraction:.4f}"
+            )
+            debug_print(f"  Generating synthetic tiles with SMOTE...")
+
+            # Collect tiles with target class
+            class_tiles = []
+            for tile_name in tile_records["train"]:
+                tile_label_path = os.path.join(train_label_dir, tile_name)
+                tile_labels_arr = np.load(tile_label_path)
+
+                # Check if tile has target class
+                has_class = False
+                if use_soft_labels:
+                    has_class = np.mean(tile_labels_arr[oversample_class]) > 0.01
+                else:
+                    valid_pixels = tile_labels_arr != 255
+                    if np.any(valid_pixels):
+                        has_class = np.any(
+                            tile_labels_arr[valid_pixels] == oversample_class
+                        )
+
+                if has_class:
+                    class_tiles.append(tile_name)
+
+            debug_print(
+                f"  Found {len(class_tiles)} tiles with Class {oversample_class}"
+            )
+
+            if len(class_tiles) >= smote_k_neighbors + 1:
+                # Load tiles into array for SMOTE
+                # Sample max 50 tiles to keep memory reasonable
+                sample_size = min(50, len(class_tiles))
+                sampled_tiles = random.sample(class_tiles, sample_size)
+
+                # Flatten tiles: each tile becomes one "sample" with flattened features
+                X_samples = []
+                y_samples = []
+
+                for tile_name in sampled_tiles:
+                    tile_feature_path = os.path.join(train_tile_dir, tile_name)
+                    tile_label_path = os.path.join(train_label_dir, tile_name)
+
+                    tile_features = np.load(tile_feature_path)  # (C, H, W)
+                    tile_labels = np.load(tile_label_path)
+
+                    # Flatten: (C, H, W) -> (C, H*W) -> (H*W, C)
+                    C, H, W = tile_features.shape
+                    flat_features = tile_features.reshape(C, H * W).T  # (H*W, C)
+
+                    if use_soft_labels:
+                        # Use argmax for SMOTE
+                        flat_labels = np.argmax(
+                            tile_labels.reshape(config["model"]["out_classes"], H * W),
+                            axis=0,
+                        )
+                    else:
+                        flat_labels = tile_labels.flatten()
+
+                    # Filter out ignore pixels
+                    valid_mask = flat_labels != 255
+                    X_samples.append(flat_features[valid_mask])
+                    y_samples.append(flat_labels[valid_mask])
+
+                # Concatenate all samples
+                X = np.vstack(X_samples)
+                y = np.concatenate(y_samples)
+
+                # Calculate sampling strategy
+                unique_classes, class_counts = np.unique(y, return_counts=True)
+                class_count_dict = dict(zip(unique_classes, class_counts))
+
+                # Target count for minority class
+                target_count = int(oversample_target_fraction * len(y))
+                current_count = class_count_dict.get(oversample_class, 0)
+
+                if current_count > 0 and target_count > current_count:
+                    sampling_strategy = {oversample_class: target_count}
+
+                    debug_print(
+                        f"  Running SMOTE: {current_count} -> {target_count} samples"
+                    )
+
+                    try:
+                        smote = SMOTE(
+                            sampling_strategy=sampling_strategy,
+                            k_neighbors=smote_k_neighbors,
+                            random_state=dataset_cfg.get("random_state", 42),
+                        )
+                        X_resampled, y_resampled = smote.fit_resample(X, y)
+
+                        # Create synthetic tiles from resampled data
+                        synthetic_pixels = len(y_resampled) - len(y)
+                        synthetic_tiles_needed = int(
+                            np.ceil(synthetic_pixels / (H * W * 0.8))
+                        )  # 80% valid pixels
+
+                        debug_print(f"  Generated {synthetic_pixels} synthetic pixels")
+                        debug_print(
+                            f"  Creating {synthetic_tiles_needed} synthetic tiles..."
+                        )
+
+                        # Create synthetic tiles
+                        synth_tile_count = 0
+                        idx_offset = len(y)  # Start from synthetic samples
+
+                        for i in range(synthetic_tiles_needed):
+                            if idx_offset >= len(y_resampled):
+                                break
+
+                            # Sample pixels for this tile
+                            tile_pixels = min(H * W, len(y_resampled) - idx_offset)
+                            tile_X = X_resampled[idx_offset : idx_offset + tile_pixels]
+                            tile_y = y_resampled[idx_offset : idx_offset + tile_pixels]
+
+                            # Reshape to tile format
+                            # Pad if needed
+                            if tile_pixels < H * W:
+                                pad_size = H * W - tile_pixels
+                                tile_X = np.vstack([tile_X, np.zeros((pad_size, C))])
+                                tile_y = np.concatenate(
+                                    [tile_y, np.full(pad_size, 255)]
+                                )
+
+                            tile_features = tile_X.T.reshape(C, H, W)
+                            tile_labels = tile_y.reshape(H, W)
+
+                            # Save synthetic tile
+                            synth_name = f"train_smote_{synth_tile_count}.npy"
+                            np.save(
+                                os.path.join(train_tile_dir, synth_name),
+                                tile_features.astype(np.float32),
+                            )
+
+                            if use_soft_labels:
+                                # Convert to soft labels
+                                tile_labels_soft = np.zeros(
+                                    (config["model"]["out_classes"], H, W),
+                                    dtype=np.float32,
+                                )
+                                for cls in range(config["model"]["out_classes"]):
+                                    tile_labels_soft[cls] = (tile_labels == cls).astype(
+                                        np.float32
+                                    )
+                                np.save(
+                                    os.path.join(train_label_dir, synth_name),
+                                    tile_labels_soft,
+                                )
+                            else:
+                                np.save(
+                                    os.path.join(train_label_dir, synth_name),
+                                    tile_labels.astype(np.uint8),
+                                )
+
+                            tile_records["train"].append(synth_name)
+
+                            # Update pixel counts
+                            valid_pixels = tile_labels != 255
+                            if np.any(valid_pixels):
+                                unique, counts = np.unique(
+                                    tile_labels[valid_pixels], return_counts=True
+                                )
+                                for cls, count in zip(unique, counts):
+                                    class_pixel_counts[str(int(cls))] += int(count)
+
+                            synth_tile_count += 1
+                            idx_offset += tile_pixels
+
+                        # Final stats
+                        total_pixels_after_smote = sum(class_pixel_counts.values())
+                        final_class_pixels_smote = class_pixel_counts.get(
+                            str(oversample_class), 0
+                        )
+                        final_fraction_smote = final_class_pixels_smote / max(
+                            total_pixels_after_smote, 1
+                        )
+
+                        debug_print(f"  ✓ Added {synth_tile_count} synthetic tiles")
+                        debug_print(
+                            f"  Final Class {oversample_class} fraction after SMOTE: {final_fraction_smote:.4f} "
+                            f"({final_class_pixels_smote:.0f} / {total_pixels_after_smote:.0f} pixels)"
+                        )
+
+                    except Exception as e:
+                        debug_print(f"  WARNING: SMOTE failed: {e}")
+                else:
+                    debug_print(
+                        f"  Target already met or insufficient samples, skipping SMOTE"
+                    )
+            else:
+                debug_print(
+                    f"  WARNING: Not enough tiles ({len(class_tiles)}) for SMOTE (need >{smote_k_neighbors})"
+                )
+        else:
+            debug_print(
+                f"  Target fraction already met ({current_fraction:.4f} >= {oversample_target_fraction:.4f})"
+            )
+
+    elif use_smote and not SMOTE_AVAILABLE:
+        debug_print(
+            "  WARNING: SMOTE enabled but imbalanced-learn not installed. Skipping SMOTE."
+        )
+
     splits_path = os.path.join(structure_cfg["splits_dir"], "splits.json")
     with open(splits_path, "w") as f:
         json.dump(tile_records, f, indent=2)
+
+    # Validate test split class distribution
+    num_classes = config["model"]["out_classes"]
+    test_classes_found = set()
+
+    if tile_records["test"]:
+        debug_print("prepare_dataset: validating test split class distribution")
+        test_label_dir = os.path.join(structure_cfg["labels_dir"], "test")
+
+        for tile_name in tile_records["test"]:
+            tile_label_path = os.path.join(test_label_dir, tile_name)
+            tile_labels = np.load(tile_label_path)
+
+            # Handle both soft and hard labels
+            if use_soft_labels:
+                # For soft labels: shape (num_classes, H, W)
+                # Check which classes have significant probability mass
+                for cls_idx in range(num_classes):
+                    if np.any(tile_labels[cls_idx] > 0.1):  # Threshold for soft labels
+                        test_classes_found.add(cls_idx)
+            else:
+                # For hard labels: shape (H, W)
+                valid_pixels = tile_labels != 255
+                if np.any(valid_pixels):
+                    unique_classes = np.unique(tile_labels[valid_pixels])
+                    test_classes_found.update(
+                        int(c) for c in unique_classes if c != 255
+                    )
+
+        missing_classes = set(range(num_classes)) - test_classes_found
+        if missing_classes:
+            debug_print(
+                f"prepare_dataset: WARNING - Test split missing classes: {sorted(missing_classes)}. "
+                f"Found classes: {sorted(test_classes_found)}. "
+                "This may affect evaluation. Consider increasing test_size or max_split_attempts."
+            )
+        else:
+            debug_print(
+                f"prepare_dataset: ✓ Test split contains all {num_classes} classes: {sorted(test_classes_found)}"
+            )
 
     summary_path = os.path.join(structure_cfg["splits_dir"], "dataset_summary.json")
     dataset_summary = {
@@ -1395,6 +1866,7 @@ def prepare_dataset(
         "tile_counts": {split: len(names) for split, names in tile_records.items()},
         "class_pixel_counts": class_pixel_counts,
         "ignore_pixel_count": ignore_pixel_count,
+        "test_classes_found": sorted(test_classes_found) if test_classes_found else [],
         "feature_stack_profile": {
             "height": height,
             "width": width,
@@ -1448,9 +1920,25 @@ Examples:
     artifacts = preprocess_data(config, force_recreate=args.force_recreate)
     debug_print("main: preprocessing complete")
 
-    debug_print("main: preparing training dataset tiles")
-    prepare_dataset(config, artifacts["train"], force_recreate=args.force_recreate)
-    debug_print("main: dataset preparation complete")
+    # V2.5 Enhancement: Mixed-domain dataset preparation
+    # Merges training and test areas to improve geographic generalization
+    use_mixed_domain = config.get("dataset", {}).get("use_mixed_domain", False)
+
+    if use_mixed_domain and "train" in artifacts and "test" in artifacts:
+        debug_print("main: preparing MIXED-DOMAIN dataset (train + test areas)")
+        from src.prepare_mixed_domain_dataset import prepare_mixed_domain_dataset
+
+        prepare_mixed_domain_dataset(
+            config,
+            artifacts["train"],
+            artifacts["test"],
+            force_recreate=args.force_recreate,
+        )
+        debug_print("main: mixed-domain dataset preparation complete")
+    else:
+        debug_print("main: preparing training dataset tiles (single area)")
+        prepare_dataset(config, artifacts["train"], force_recreate=args.force_recreate)
+        debug_print("main: dataset preparation complete")
 
     debug_print("main: launching model training")
     training_artifacts = train_model(

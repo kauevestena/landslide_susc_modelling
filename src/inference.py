@@ -817,6 +817,14 @@ def run_inference(
         classes=num_classes,
     )
 
+    # V2.5: Add spatial attention if enabled (must match training architecture)
+    use_attention = config["model"].get("attention", False)
+    if use_attention:
+        logger.info("[run_inference] Wrapping model with Spatial Attention Module...")
+        from src.train import UnetWithAttention
+
+        model = UnetWithAttention(model)
+
     dropout_prob = config["model"].get("dropout_prob", 0.0)
     if dropout_prob and dropout_prob > 0:
         logger.info(f"[run_inference] Adding dropout layer (p={dropout_prob})")
@@ -1119,9 +1127,7 @@ def run_inference(
                 f"[run_inference] Using configured class breaks for ordinal mapping: {class_breaks}"
             )
             sorted_breaks = sorted(class_breaks)
-            digitized = np.digitize(susceptibility, bins=sorted_breaks).astype(
-                np.uint8
-            )
+            digitized = np.digitize(susceptibility, bins=sorted_breaks).astype(np.uint8)
             digitized[digitized >= num_classes] = num_classes - 1
             class_map = digitized
         else:
