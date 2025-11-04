@@ -69,6 +69,7 @@ preprocessing:
 dataset:
   use_mixed_domain: true  # NEW V2.5: Merge training and test areas for geographic generalization
   export_geotiff_tiles: true  # NEW V2.5: Export tiles as GeoTIFF for spatial inspection
+  spatial_block_size: 5  # NEW: Minimum spatial separation (in tiles) between train/val/test splits to prevent data leakage
   tile_size: 256  # REDUCED from 512 to create ~4x more tiles
   tile_overlap: 128  # REDUCED proportionally (was 64)
   block_grid: [1, 1]

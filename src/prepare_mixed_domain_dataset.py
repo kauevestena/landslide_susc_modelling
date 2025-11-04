@@ -372,29 +372,97 @@ def prepare_mixed_domain_dataset(
         f"Tiles by area: train={len(train_area_tiles)}, test={len(test_area_tiles)}"
     )
 
-    # Step 6: Split ensuring both areas are represented in all splits
+    # Step 6: Spatial block split to prevent data leakage
+    # CRITICAL: Adjacent tiles MUST be in same split to avoid spatial autocorrelation
     test_size = dataset_cfg.get("test_size", 0.2)
     val_size = dataset_cfg.get("val_size", 0.15)
     random_state = dataset_cfg.get("random_state", 42)
     rng = random.Random(config["reproducibility"]["seed"])
 
+    # Define spatial block size (minimum distance between train/test tiles)
+    block_size = dataset_cfg.get(
+        "spatial_block_size", 5
+    )  # 5 tiles = 5*128 = 640 pixels minimum separation
+
+    debug_print(
+        f"Using spatial block splitting (block_size={block_size} tiles, min separation={block_size * stride} pixels)"
+    )
+
     # Split each area separately, then combine
-    def split_area_tiles(area_tiles, test_fraction, val_fraction, seed):
+    def split_area_tiles_spatially(area_tiles, test_fraction, val_fraction, seed):
+        """
+        Split tiles using spatial blocking to prevent data leakage.
+        Adjacent tiles are grouped into blocks and blocks are split, not individual tiles.
+        """
         if len(area_tiles) < 3:
             # Too few tiles, put all in train
             return area_tiles, [], []
 
-        area_train, area_test = train_test_split(
-            area_tiles, test_size=test_fraction, random_state=seed
+        # Group tiles into spatial blocks
+        # Sort by Y coordinate, then X coordinate
+        sorted_tiles = sorted(area_tiles, key=lambda t: (t[0], t[1]))
+
+        # Create spatial blocks (groups of nearby tiles)
+        blocks = []
+        current_block = []
+
+        for i, (y, x) in enumerate(sorted_tiles):
+            if not current_block:
+                current_block.append((y, x))
+            else:
+                # Check if this tile is close to the block (within block_size tiles)
+                last_y, last_x = current_block[-1]
+                distance_tiles = max(
+                    abs(y - last_y) // stride, abs(x - last_x) // stride
+                )
+
+                if distance_tiles < block_size:
+                    # Close enough, add to current block
+                    current_block.append((y, x))
+                else:
+                    # Too far, start new block
+                    blocks.append(current_block)
+                    current_block = [(y, x)]
+
+        # Add last block
+        if current_block:
+            blocks.append(current_block)
+
+        debug_print(
+            f"  Created {len(blocks)} spatial blocks from {len(area_tiles)} tiles"
         )
 
-        if len(area_train) < 2 or val_fraction <= 0:
-            return area_train, [], area_test
+        # Now split blocks (not individual tiles)
+        if len(blocks) < 3:
+            # Too few blocks, put all tiles in train
+            all_tiles = [tile for block in blocks for tile in block]
+            return all_tiles, [], []
 
-        remaining_frac = 1.0 - test_fraction
-        adjusted_val = val_fraction / remaining_frac
-        area_train, area_val = train_test_split(
-            area_train, test_size=adjusted_val, random_state=seed + 1
+        # Shuffle blocks randomly
+        random.Random(seed).shuffle(blocks)
+
+        # Split blocks into train/test
+        n_test_blocks = max(1, int(len(blocks) * test_fraction))
+        test_blocks = blocks[:n_test_blocks]
+        remaining_blocks = blocks[n_test_blocks:]
+
+        if len(remaining_blocks) < 2 or val_fraction <= 0:
+            train_blocks = remaining_blocks
+            val_blocks = []
+        else:
+            n_val_blocks = max(
+                1, int(len(remaining_blocks) * val_fraction / (1.0 - test_fraction))
+            )
+            val_blocks = remaining_blocks[:n_val_blocks]
+            train_blocks = remaining_blocks[n_val_blocks:]
+
+        # Flatten blocks back to tile lists
+        area_train = [tile for block in train_blocks for tile in block]
+        area_val = [tile for block in val_blocks for tile in block]
+        area_test = [tile for block in test_blocks for tile in block]
+
+        debug_print(
+            f"  Split into {len(train_blocks)} train, {len(val_blocks)} val, {len(test_blocks)} test blocks"
         )
 
         return area_train, area_val, area_test
@@ -403,10 +471,12 @@ def prepare_mixed_domain_dataset(
         train_tiles_from_train_area,
         val_tiles_from_train_area,
         test_tiles_from_train_area,
-    ) = split_area_tiles(train_area_tiles, test_size, val_size, random_state)
+    ) = split_area_tiles_spatially(train_area_tiles, test_size, val_size, random_state)
 
     train_tiles_from_test_area, val_tiles_from_test_area, test_tiles_from_test_area = (
-        split_area_tiles(test_area_tiles, test_size, val_size, random_state + 100)
+        split_area_tiles_spatially(
+            test_area_tiles, test_size, val_size, random_state + 100
+        )
     )
 
     # Combine splits

@@ -945,6 +945,18 @@ def process_area(
         )
         gt = gt_array[0]
         gt = np.round(gt).astype(np.int16)
+
+        # CRITICAL FIX: Remap ground truth values to model classes
+        # Ground truth encoding: 0=invalid/empty, 1=low, 2=moderate, 3=high
+        # Model expects: 0=low, 1=moderate, 2=high, 255=ignore
+        # Remap: GT[0]->255, GT[1]->0, GT[2]->1, GT[3]->2
+        gt_remapped = np.full_like(gt, 255, dtype=np.int16)
+        gt_remapped[gt == 1] = 0  # Low risk
+        gt_remapped[gt == 2] = 1  # Moderate risk
+        gt_remapped[gt == 3] = 2  # High risk
+        # GT value 0 and any other values remain as 255 (ignore)
+        gt = gt_remapped
+
         gt[~valid_mask] = 255
         ignore_mask = compute_ignore_mask(
             gt, preprocessing_cfg.get("boundary_ignore_pixels", 0)
