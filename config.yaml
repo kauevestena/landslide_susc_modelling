@@ -49,17 +49,17 @@ preprocessing:
     source: worldcover  # Options: worldcover, dynamic_world, none
     worldcover:
       year: 2021  # 2020 or 2021
-  label_smoothing:
-    enabled: true  # RE-ENABLED: Soft labels with higher alpha for better boundaries
-    type: ordinal  # Options: ordinal, gaussian, none
-    alpha: 0.2  # INCREASED: More aggressive smoothing (was 0.1)
-    sigma: 1.0  # For gaussian: spatial smoothing kernel size
     dynamic_world:
       start_date: null  # YYYY-MM-DD format, null for auto (last 6 months)
       end_date: null
       use_probabilities: false  # Use probability bands instead of hard classification
       ee_project: null  # Google Cloud project ID for Earth Engine
     force_download: false  # Force re-download even if cached files exist
+  label_smoothing:
+    enabled: true  # RE-ENABLED: Soft labels with higher alpha for better boundaries
+    type: ordinal  # Options: ordinal, gaussian, none
+    alpha: 0.2  # INCREASED: More aggressive smoothing (was 0.1)
+    sigma: 1.0  # For gaussian: spatial smoothing kernel size
   normalization:
     strategy: zscore
     epsilon: 1.0e-6

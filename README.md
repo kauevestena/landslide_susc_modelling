@@ -9,13 +9,13 @@ The current source of truth is the implementation plus `config.yaml`. Older hist
 Always use the repository virtual environment directly:
 
 ```bash
-.venv/bin/python -m src.main_pipeline
+.venv/bin/python manage.py pipeline
 ```
 
 To rebuild all preprocessing, tiles, model artifacts, and outputs from scratch:
 
 ```bash
-.venv/bin/python -m src.main_pipeline --force_recreate
+.venv/bin/python manage.py pipeline --force_recreate
 ```
 
 Install or refresh dependencies with:
@@ -26,10 +26,17 @@ Install or refresh dependencies with:
 
 Do not use system `python`, `python3`, or `pip` for this repository.
 
+Before running inference with the current config, CRF setup must pass:
+
+```bash
+.venv/bin/python manage.py check-crf
+```
+
 ## Main Files
 
 - `config.yaml` controls directories, preprocessing, tiling, model, training, and inference settings.
 - `inputs.py` defines the absolute local raster paths for the train and test areas.
+- `manage.py` is the canonical operations CLI for validation, preprocessing, CRF checks, and pipeline launch.
 - `src/main_pipeline.py` is the active end-to-end entrypoint.
 - `src/train.py` contains dataset loading, losses, training, metrics, and calibration.
 - `src/inference.py` writes final GeoTIFF deliverables.
@@ -61,6 +68,14 @@ The active inference output names are:
 
 Generated rasters, tiles, model checkpoints, reports, and logs are runtime artifacts. They are not source documentation and should not be committed.
 
+## Validation
+
+```bash
+.venv/bin/python manage.py validate --config config.yaml
+.venv/bin/python manage.py validate-spatial --metadata artifacts/derived/merged/merged_metadata.json
+.venv/bin/python -m compileall -q inputs.py manage.py src
+```
+
 ## More Detail
 
-Read `updated_full_guide.md` for the full project orientation, current artifact snapshot, known risks, and validation commands.
+Read `updated_full_guide.md` for the full project orientation, current artifact snapshot, resolved sharp edges, remaining cautions, and validation commands.

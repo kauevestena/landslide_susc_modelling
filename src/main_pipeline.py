@@ -107,8 +107,164 @@ class AreaArtifacts:
     normalization_stats_path: Optional[str] = None
 
 
+FEATURE_METADATA_SCHEMA_VERSION = 2
+DATASET_SUMMARY_SCHEMA_VERSION = 2
+
+
 def debug_print(message: str) -> None:
     print(f"[main_pipeline] {message}", flush=True)
+
+
+def preprocessing_snapshot(preprocessing_cfg: Dict) -> Dict:
+    """Capture config values that affect feature-stack artifacts."""
+    external_lulc = preprocessing_cfg.get("external_lulc", {})
+    return {
+        "resampling": preprocessing_cfg.get("resampling", {}),
+        "dtm_hygiene": preprocessing_cfg.get("dtm_hygiene", {}),
+        "hydrology": preprocessing_cfg.get("hydrology", {}),
+        "derived_channels": preprocessing_cfg.get("derived_channels", {}),
+        "orthophoto_channels": preprocessing_cfg.get("orthophoto_channels", {}),
+        "external_lulc": {
+            "enabled": external_lulc.get("enabled", False),
+            "source": external_lulc.get("source", "none"),
+            "worldcover": external_lulc.get("worldcover", {}),
+            "dynamic_world": external_lulc.get("dynamic_world", {}),
+            "force_download": external_lulc.get("force_download", False),
+        },
+        "normalization": preprocessing_cfg.get("normalization", {}),
+        "boundary_ignore_pixels": preprocessing_cfg.get("boundary_ignore_pixels", 0),
+        "min_valid_fraction": preprocessing_cfg.get("min_valid_fraction"),
+    }
+
+
+def feature_artifacts_current(
+    area_inputs: AreaInputs,
+    feature_stack_path: str,
+    mask_path: str,
+    metadata_path: str,
+    ground_truth_path: Optional[str],
+    normalization_stats_path: str,
+    preprocessing_cfg: Dict,
+) -> Tuple[bool, str]:
+    """Validate whether existing preprocessing artifacts match current code/config."""
+    required_paths = [feature_stack_path, mask_path, metadata_path]
+    if ground_truth_path:
+        required_paths.append(ground_truth_path)
+    if area_inputs.name == "train":
+        required_paths.append(normalization_stats_path)
+
+    missing = [path for path in required_paths if not os.path.exists(path)]
+    if missing:
+        return False, f"missing artifacts: {missing}"
+
+    try:
+        with open(metadata_path, "r") as f:
+            metadata = json.load(f)
+    except (OSError, json.JSONDecodeError) as exc:
+        return False, f"metadata unreadable: {exc}"
+
+    if metadata.get("schema_version") != FEATURE_METADATA_SCHEMA_VERSION:
+        return False, "feature metadata schema is missing or stale"
+
+    expected_sources = {
+        "dtm": area_inputs.dtm,
+        "ortho": area_inputs.ortho,
+        "ground_truth": area_inputs.ground_truth,
+    }
+    if metadata.get("source_files") != expected_sources:
+        return False, "input source paths changed"
+
+    if metadata.get("preprocessing_snapshot") != preprocessing_snapshot(preprocessing_cfg):
+        return False, "preprocessing config changed"
+
+    channel_names = metadata.get("channel_names")
+    channel_map = metadata.get("channel_map")
+    if not isinstance(channel_names, list) or not channel_names:
+        return False, "metadata channel_names missing"
+    if not isinstance(channel_map, dict):
+        return False, "metadata channel_map missing"
+
+    try:
+        with rasterio.open(feature_stack_path) as feature_src:
+            if feature_src.count != len(channel_names):
+                return False, "feature stack band count differs from metadata"
+            feature_shape = (feature_src.height, feature_src.width)
+        with rasterio.open(mask_path) as mask_src:
+            if (mask_src.height, mask_src.width) != feature_shape:
+                return False, "valid mask shape differs from feature stack"
+        if ground_truth_path:
+            with rasterio.open(ground_truth_path) as gt_src:
+                if (gt_src.height, gt_src.width) != feature_shape:
+                    return False, "ground truth shape differs from feature stack"
+    except rasterio.errors.RasterioIOError as exc:
+        return False, f"artifact raster unreadable: {exc}"
+
+    return True, "current"
+
+
+def dataset_artifacts_current(
+    splits_path: str,
+    summary_path: str,
+    structure_cfg: Dict,
+    config: Dict,
+    mixed_domain: bool,
+) -> Tuple[bool, str]:
+    """Validate existing tile artifacts before resuming the tiling stage."""
+    if not os.path.exists(splits_path) or not os.path.exists(summary_path):
+        return False, "splits or dataset summary missing"
+
+    try:
+        with open(summary_path, "r") as f:
+            summary = json.load(f)
+        with open(splits_path, "r") as f:
+            splits = json.load(f)
+    except (OSError, json.JSONDecodeError) as exc:
+        return False, f"dataset metadata unreadable: {exc}"
+
+    dataset_cfg = config["dataset"]
+    smoothing_cfg = config["preprocessing"].get("label_smoothing", {})
+    expected_smoothing = {
+        "enabled": bool(smoothing_cfg.get("enabled", False)),
+        "type": (
+            smoothing_cfg.get("type", "none")
+            if smoothing_cfg.get("enabled", False)
+            else "none"
+        ),
+        "alpha": (
+            smoothing_cfg.get("alpha", 0.0)
+            if smoothing_cfg.get("enabled", False)
+            else 0.0
+        ),
+        "sigma": (
+            smoothing_cfg.get("sigma", 0.0)
+            if smoothing_cfg.get("enabled", False)
+            else 0.0
+        ),
+    }
+
+    if summary.get("schema_version") != DATASET_SUMMARY_SCHEMA_VERSION:
+        return False, "dataset summary schema is missing or stale"
+    if summary.get("mixed_domain") != mixed_domain:
+        return False, "dataset summary mixed_domain flag changed"
+    if summary.get("tile_size") != dataset_cfg["tile_size"]:
+        return False, "dataset tile_size changed"
+    if summary.get("tile_overlap") != dataset_cfg["tile_overlap"]:
+        return False, "dataset tile_overlap changed"
+    if summary.get("label_smoothing") != expected_smoothing:
+        return False, "label smoothing config changed"
+
+    for split_name, tile_names in splits.items():
+        if not tile_names:
+            continue
+        tile_dir = os.path.join(structure_cfg["tiles_dir"], split_name)
+        label_dir = os.path.join(structure_cfg["labels_dir"], split_name)
+        for tile_name in [tile_names[0], tile_names[-1]]:
+            if not os.path.exists(os.path.join(tile_dir, tile_name)):
+                return False, f"missing tile file for {split_name}: {tile_name}"
+            if not os.path.exists(os.path.join(label_dir, tile_name)):
+                return False, f"missing label file for {split_name}: {tile_name}"
+
+    return True, "current"
 
 
 def prepare_directories(structure_cfg: Dict[str, str]) -> None:
@@ -795,17 +951,17 @@ def process_area(
     if area_inputs.ground_truth:
         ground_truth_path = os.path.join(area_dir, "ground_truth_aligned.tif")
 
-    # Check if artifacts already exist
-    artifacts_exist = (
-        os.path.exists(feature_stack_path)
-        and os.path.exists(mask_path)
-        and os.path.exists(metadata_path)
+    artifacts_current, artifact_reason = feature_artifacts_current(
+        area_inputs,
+        feature_stack_path,
+        mask_path,
+        metadata_path,
+        ground_truth_path,
+        normalization_stats_path,
+        preprocessing_cfg,
     )
 
-    if area_inputs.ground_truth:
-        artifacts_exist = artifacts_exist and os.path.exists(ground_truth_path)
-
-    if artifacts_exist and not force_recreate:
+    if artifacts_current and not force_recreate:
         debug_print(
             f"process_area: artifacts for '{area_inputs.name}' already exist, skipping preprocessing"
         )
@@ -831,6 +987,10 @@ def process_area(
             ),
         )
         return artifacts, existing_stats
+    elif not force_recreate:
+        debug_print(
+            f"process_area: existing artifacts for '{area_inputs.name}' are stale ({artifact_reason}); regenerating"
+        )
 
     debug_print(
         f"process_area: processing area '{area_inputs.name}' (force_recreate={force_recreate})"
@@ -959,6 +1119,7 @@ def process_area(
     )
 
     metadata = {
+        "schema_version": FEATURE_METADATA_SCHEMA_VERSION,
         "channel_names": channel_names,
         "channel_map": {name: idx for idx, name in enumerate(channel_names)},
         "land_cover_clusters": (
@@ -977,6 +1138,13 @@ def process_area(
             "ortho": area_inputs.ortho,
             "ground_truth": area_inputs.ground_truth,
         },
+        "label_encoding": {
+            "0": "low",
+            "1": "medium",
+            "2": "high",
+            "255": "ignore",
+        },
+        "preprocessing_snapshot": preprocessing_snapshot(preprocessing_cfg),
         "auxiliary_layers": {
             "slope_deg": slope_qc_path,
             "land_cover": lulc_qc_path,
@@ -1086,32 +1254,42 @@ def prepare_dataset(
         and os.path.exists(summary_path)
         and not force_recreate
     ):
-        debug_print("prepare_dataset: dataset artifacts already exist, skipping tiling")
-        # Verify that tiles exist
-        with open(splits_path, "r") as f:
-            splits_data = json.load(f)
-
-        tiles_exist = True
-        for split_name, tile_list in splits_data.items():
-            if not tile_list:
-                continue
-            # Check if at least first and last tile exist
-            first_tile = os.path.join(
-                structure_cfg["tiles_dir"], split_name, tile_list[0]
-            )
-            if not os.path.exists(first_tile):
-                tiles_exist = False
-                break
-
-        if tiles_exist:
+        dataset_current, dataset_reason = dataset_artifacts_current(
+            splits_path, summary_path, structure_cfg, config, mixed_domain=False
+        )
+        if not dataset_current:
             debug_print(
-                "prepare_dataset: verified tile files exist, skipping dataset preparation"
+                f"prepare_dataset: dataset artifacts are stale ({dataset_reason}); regenerating"
             )
-            return
         else:
-            debug_print(
-                "prepare_dataset: splits.json exists but tiles missing, regenerating"
-            )
+            debug_print("prepare_dataset: dataset artifacts already exist, skipping tiling")
+            # Verify that tiles exist
+            with open(splits_path, "r") as f:
+                splits_data = json.load(f)
+
+            tiles_exist = True
+            for split_name, tile_list in splits_data.items():
+                if not tile_list:
+                    continue
+                # Check if at least first and last tile exist
+                first_tile = os.path.join(
+                    structure_cfg["tiles_dir"], split_name, tile_list[0]
+                )
+                if not os.path.exists(first_tile):
+                    tiles_exist = False
+                    break
+
+            if tiles_exist:
+                debug_print(
+                    "prepare_dataset: verified tile files exist, skipping dataset preparation"
+                )
+                return
+            else:
+                debug_print(
+                    "prepare_dataset: splits.json exists but tiles missing, regenerating"
+                )
+    elif os.path.exists(splits_path) or os.path.exists(summary_path):
+        debug_print("prepare_dataset: partial dataset artifacts found, regenerating")
 
     debug_print(f"prepare_dataset: preparing dataset (force_recreate={force_recreate})")
 
@@ -1147,10 +1325,15 @@ def prepare_dataset(
         slope_deg = features[metadata["channel_map"].get("slope_deg", 0)]
 
     labels = ground_truth.copy()
-    ignore_mask = labels == 255
-    labels = np.where(
-        ignore_mask, 255, np.clip(labels, 1, config["model"]["out_classes"]) - 1
-    )
+    valid_classes = np.arange(config["model"]["out_classes"], dtype=labels.dtype)
+    known_label_mask = np.isin(labels, valid_classes) | (labels == 255)
+    if np.any(~known_label_mask):
+        unexpected_values = np.unique(labels[~known_label_mask])
+        debug_print(
+            "prepare_dataset: unexpected label values found after preprocessing "
+            f"{unexpected_values.tolist()}, setting them to 255"
+        )
+        labels[~known_label_mask] = 255
     labels[~valid_mask] = 255
 
     # Apply label smoothing if enabled
@@ -1929,6 +2112,8 @@ def prepare_dataset(
 
     summary_path = os.path.join(structure_cfg["splits_dir"], "dataset_summary.json")
     dataset_summary = {
+        "schema_version": DATASET_SUMMARY_SCHEMA_VERSION,
+        "mixed_domain": False,
         "tile_size": tile_size,
         "tile_overlap": tile_overlap,
         "tile_counts": {split: len(names) for split, names in tile_records.items()},

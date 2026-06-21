@@ -16,10 +16,15 @@ This file is the operational guide for autonomous and human collaborators workin
 - Standard commands:
 
 ```bash
-.venv/bin/python -m src.main_pipeline
-.venv/bin/python -m src.main_pipeline --force_recreate
+.venv/bin/python manage.py validate --config config.yaml
+.venv/bin/python manage.py check-crf
+.venv/bin/python manage.py pipeline
+.venv/bin/python manage.py pipeline --force_recreate
 .venv/bin/python -m src.evaluate --analysis_only
 ```
+
+- `manage.py` is the only maintained helper/operations CLI. Do not revive deleted standalone helper scripts.
+- `pydensecrf` is required when `inference.crf.enabled: true`; missing CRF support is a hard setup failure, not a silent runtime downgrade.
 
 ## Active Workflow
 
@@ -28,7 +33,7 @@ The current pipeline stages are:
 1. `preprocess_data()` loads paths from `inputs.py`, aligns rasters to each DTM grid, computes terrain derivatives, fetches or derives LULC, normalizes features, remaps labels, and writes area artifacts.
 2. `prepare_mixed_domain_dataset()` is active because `dataset.use_mixed_domain: true`; it vertically combines train/test area tensors, creates spatially blocked train/val/test tiles, and writes `.npy` tiles plus optional GeoTIFF inspection tiles.
 3. `train_model()` trains the segmentation model, writes `best_model.pth`, metrics, plots, threshold selection, isotonic calibrator, optional ordinal calibrator, and temperature scaling metadata.
-4. `run_inference()` loads the test area, predicts class probabilities by sliding window, applies smoothing/calibration/optional CRF, and writes final GeoTIFF outputs plus `outputs/model_card.md`.
+4. `run_inference()` loads the test area, predicts class probabilities by sliding window, applies smoothing/calibration/CRF when enabled, and writes final GeoTIFF outputs plus `outputs/model_card.md`.
 
 ## Current Model and Data Contract
 
@@ -42,20 +47,24 @@ The current pipeline stages are:
 ## Working Practices
 
 - Keep edits targeted. Do not rewrite pipeline modules unless the task requires it.
-- Do not delete or regenerate `artifacts/`, `outputs/`, logs, or `.venv/` unless explicitly requested.
+- Do not delete or regenerate `artifacts/`, `outputs/`, or `.venv/` unless explicitly requested.
 - Use `--force_recreate` when changing preprocessing, LULC, tiling, label smoothing, channel count, or model architecture.
-- Before changing behavior, read the relevant implementation first. Several helper scripts and generated artifacts reflect older runs.
+- Before changing behavior, read the relevant implementation first. Generated artifacts may reflect older runs.
 - Large rasters are expensive; prefer metadata checks and targeted validation before launching full retraining.
 
 ## Validation
 
-For documentation-only cleanup, use:
+For standard validation, use:
 
 ```bash
-.venv/bin/python -m compileall -q inputs.py validate_spatial_split.py validate_v2_config.py src
+.venv/bin/python manage.py check-crf
+.venv/bin/python manage.py validate --config config.yaml
+.venv/bin/python manage.py validate-spatial --metadata artifacts/derived/merged/merged_metadata.json
+.venv/bin/python -m compileall -q inputs.py manage.py src
 bash -n START_V2.5_MIXED_DOMAIN.sh
 bash -n START_V2.5_TRAINING.sh
 bash -n run_fixed_pipeline.sh
+bash -n validate_v2.5_config.sh
 ```
 
 For pipeline behavior changes, add a focused smoke check when possible and state whether full preprocessing/training/inference was run.
@@ -63,6 +72,5 @@ For pipeline behavior changes, add a focused smoke check when possible and state
 ## Known Cautions
 
 - The worktree may already contain dirty code/config changes; do not revert them unless the user asks.
-- Generated artifact metadata may predate current source changes.
-- Some helper scripts contain old claims or hard-coded expectations and should not be treated as authoritative.
-- `updated_full_guide.md` lists current sharp edges and should be updated whenever implementation behavior changes.
+- Existing generated artifact metadata may predate current schema checks; the pipeline will regenerate stale artifacts when needed.
+- `updated_full_guide.md` lists resolved sharp edges and remaining cautions; update it whenever implementation behavior changes.

@@ -19,15 +19,16 @@ import segmentation_models_pytorch as smp
 
 from tqdm import tqdm
 
-# Lazy import for CRF (optional dependency)
+# Lazy import for CRF. It is required when inference.crf.enabled is true.
 try:
     import pydensecrf.densecrf as dcrf
     from pydensecrf.utils import unary_from_softmax
 
     CRF_AVAILABLE = True
-except ImportError:
+    CRF_IMPORT_ERROR = None
+except ImportError as exc:
     CRF_AVAILABLE = False
-    logging.warning("pydensecrf not available - CRF post-processing will be disabled")
+    CRF_IMPORT_ERROR = exc
 
 # Configure logging
 logging.basicConfig(level=logging.INFO, format="[%(levelname)s] %(message)s")
@@ -35,6 +36,37 @@ logger = logging.getLogger(__name__)
 
 if TYPE_CHECKING:
     from src.main_pipeline import AreaArtifacts
+
+
+def require_crf_available() -> None:
+    """Fail fast when CRF is enabled but pydensecrf is not importable."""
+    if CRF_AVAILABLE:
+        return
+    raise RuntimeError(
+        "inference.crf.enabled is true, but pydensecrf could not be imported. "
+        "Install dependencies with '.venv/bin/pip install -r requirements.txt'. "
+        f"Original import error: {CRF_IMPORT_ERROR}"
+    )
+
+
+def inference_output_paths(outputs_dir: str, area_name: str) -> Dict[str, str]:
+    """Return the canonical inference products for an area."""
+    return {
+        "susceptibility": os.path.join(outputs_dir, f"{area_name}_susceptibility.tif"),
+        "susceptibility_high": os.path.join(
+            outputs_dir, f"{area_name}_susceptibility_high.tif"
+        ),
+        "class_probabilities": os.path.join(
+            outputs_dir, f"{area_name}_class_probabilities.tif"
+        ),
+        "uncertainty": os.path.join(outputs_dir, f"{area_name}_uncertainty.tif"),
+        "class_map": os.path.join(outputs_dir, f"{area_name}_class_map.tif"),
+        "valid_mask": os.path.join(outputs_dir, f"{area_name}_valid_mask.tif"),
+        "feature_metadata": os.path.join(
+            outputs_dir, f"{area_name}_feature_metadata.json"
+        ),
+        "model_card": os.path.join(outputs_dir, "model_card.md"),
+    }
 
 
 def create_blend_weights(
@@ -763,19 +795,23 @@ def run_inference(
     area_name = area.name
     logger.info(f"[run_inference] Inference area: {area_name}")
 
-    # Check if inference outputs already exist
-    susceptibility_path = os.path.join(
-        outputs_dir, f"{area_name}_landslide_susceptibility.tif"
-    )
-    uncertainty_path = os.path.join(outputs_dir, f"{area_name}_uncertainty.tif")
-    valid_mask_path = os.path.join(outputs_dir, f"{area_name}_valid_mask.tif")
-    model_card_path = os.path.join(outputs_dir, "model_card.md")
+    if config.get("inference", {}).get("crf", {}).get("enabled", False):
+        require_crf_available()
 
-    outputs_exist = (
-        os.path.exists(susceptibility_path)
-        and os.path.exists(uncertainty_path)
-        and os.path.exists(valid_mask_path)
-        and os.path.exists(model_card_path)
+    # Check if inference outputs already exist
+    output_paths = inference_output_paths(outputs_dir, area_name)
+    required_outputs = [
+        "susceptibility",
+        "susceptibility_high",
+        "class_probabilities",
+        "uncertainty",
+        "class_map",
+        "valid_mask",
+        "feature_metadata",
+        "model_card",
+    ]
+    outputs_exist = all(
+        os.path.exists(output_paths[name]) for name in required_outputs
     )
 
     if outputs_exist and not force_recreate:
@@ -939,7 +975,7 @@ def run_inference(
 
     # CRF configuration
     crf_config = config["inference"].get("crf", {})
-    crf_enabled = crf_config.get("enabled", False) and CRF_AVAILABLE
+    crf_enabled = crf_config.get("enabled", False)
 
     logger.info(
         f"[run_inference] Inference config: window={window_size}, overlap={overlap}, "
@@ -1211,14 +1247,12 @@ def run_inference(
 
     # Write outputs
     logger.info("[run_inference] Writing output GeoTIFFs...")
-    susceptibility_path = os.path.join(outputs_dir, f"{area.name}_susceptibility.tif")
-    susceptibility_high_path = os.path.join(
-        outputs_dir, f"{area.name}_susceptibility_high.tif"
-    )
-    class_probs_path = os.path.join(outputs_dir, f"{area.name}_class_probabilities.tif")
-    uncertainty_path = os.path.join(outputs_dir, f"{area.name}_uncertainty.tif")
-    class_map_path = os.path.join(outputs_dir, f"{area.name}_class_map.tif")
-    valid_mask_path = os.path.join(outputs_dir, f"{area.name}_valid_mask.tif")
+    susceptibility_path = output_paths["susceptibility"]
+    susceptibility_high_path = output_paths["susceptibility_high"]
+    class_probs_path = output_paths["class_probabilities"]
+    uncertainty_path = output_paths["uncertainty"]
+    class_map_path = output_paths["class_map"]
+    valid_mask_path = output_paths["valid_mask"]
 
     logger.info(f"[run_inference] Writing: {susceptibility_path}")
     write_geotiff(
@@ -1273,7 +1307,7 @@ def run_inference(
     )
 
     logger.info("[run_inference] Copying feature metadata...")
-    metadata_copy_path = os.path.join(outputs_dir, f"{area.name}_feature_metadata.json")
+    metadata_copy_path = output_paths["feature_metadata"]
     shutil.copyfile(area.metadata_path, metadata_copy_path)
 
     logger.info("[run_inference] Writing model card...")

@@ -28,13 +28,13 @@ Outputs:
 The active command is:
 
 ```bash
-.venv/bin/python -m src.main_pipeline
+.venv/bin/python manage.py pipeline
 ```
 
 Use this to force a full rebuild:
 
 ```bash
-.venv/bin/python -m src.main_pipeline --force_recreate
+.venv/bin/python manage.py pipeline --force_recreate
 ```
 
 Always use `.venv/bin/python` and `.venv/bin/pip`; do not use system Python.
@@ -45,6 +45,7 @@ Maintained source files:
 
 - `config.yaml`: central runtime configuration.
 - `inputs.py`: absolute local file paths for training and test rasters.
+- `manage.py`: canonical operations CLI for validation, CRF checks, preprocessing, spatial split checks, and pipeline launch.
 - `requirements.txt`: Python dependencies.
 - `src/main_pipeline.py`: end-to-end preprocessing, dataset preparation dispatch, training, and inference orchestration.
 - `src/prepare_mixed_domain_dataset.py`: current active mixed-domain tiling path.
@@ -55,7 +56,7 @@ Maintained source files:
 - `src/visualize.py`: ROC, PR, calibration, and training-history plots.
 - `src/soft_labels.py`: ordinal and gaussian soft-label generation.
 - `src/external_data_fetch/`: ESA WorldCover and Google Dynamic World fetchers.
-- `validate_spatial_split.py`, `validate_v2_config.py`, and `*.sh`: helper scripts, some with stale assumptions.
+- `*.sh`: compatibility wrappers that call `manage.py`.
 
 Maintained Markdown docs:
 
@@ -67,7 +68,6 @@ Generated artifacts:
 
 - `artifacts/`: derived rasters, merged stacks, tiles, model checkpoints, calibrators, metrics, figures.
 - `outputs/`: final GeoTIFFs, model card, generated evaluation reports.
-- `training_log*.txt`, `pipeline*.log`: historical logs.
 
 Generated artifacts are useful evidence but not source documentation.
 
@@ -98,7 +98,7 @@ The current `config.yaml` sets:
 - `inference.mc_dropout_iterations: 0`.
 - `inference.class_breaks: null`, meaning multi-class class maps use argmax in current source.
 - `inference.temperature_override: null`, meaning learned temperature metadata is used when present.
-- `inference.crf.enabled: true`, but CRF only runs when `pydensecrf` imports successfully.
+- `inference.crf.enabled: true`; `pydensecrf` is required and setup is asserted before inference.
 
 The current `inputs.py` points to local absolute paths under `/home/kaue/data/landslide/`.
 
@@ -174,7 +174,7 @@ Current generated `dataset_summary.json` reports:
 - Test contribution: 21 from train area, 113 from test area.
 - Class pixel counts: class 0 = 31,779,863; class 1 = 16,336,765; class 2 = 355,096.
 
-Important caveat: the generated `dataset_summary.json` appears older than the current dirty source because it does not contain label-smoothing metadata that the current source would now write.
+Important caveat: existing generated artifacts may predate the current schema fields. The pipeline now treats missing or stale metadata schemas as a reason to regenerate instead of silently resuming.
 
 ### 4.3 Training
 
@@ -242,7 +242,7 @@ The inference path:
 5. Runs sliding-window inference over the feature stack.
 6. Uses overlap blending when configured.
 7. Applies probability smoothing when `inference.smoothing_alpha > 0`.
-8. Applies CRF if enabled and if `pydensecrf` is importable.
+8. Applies CRF when enabled. If `pydensecrf` is not importable while CRF is enabled, inference fails fast with setup guidance.
 9. Optionally runs MC dropout uncertainty when configured.
 10. Computes:
     - `susceptibility_high`: calibrated probability for class 2.
@@ -311,7 +311,7 @@ The active config uses ESA WorldCover.
 - can build hard-class or probability-band composites over a date range.
 - reprojects and one-hot encodes to the reference raster.
 
-Current caution: in `config.yaml`, `dynamic_world` and `force_download` are nested under `preprocessing.label_smoothing`, not under `preprocessing.external_lulc`. That means Dynamic World-related options are not placed where `fetch_external_lulc()` expects them. This guide documents the issue but does not fix config.
+Dynamic World options now live under `preprocessing.external_lulc.dynamic_world`, and `force_download` lives under `preprocessing.external_lulc`, which is where `fetch_external_lulc()` expects them.
 
 ## 6. Current Artifact Snapshot
 
@@ -345,39 +345,45 @@ Current tracked source tree had pre-existing dirty non-doc changes at audit time
 
 Those changes are treated as current implementation truth and should not be reverted without explicit user instruction.
 
-## 7. Known Sharp Edges
+## 7. Resolved Sharp Edges and Remaining Cautions
 
-These are documented risks observed from source and artifacts. They are not fixed by this documentation cleanup.
+Resolved in current source:
 
-- Generated artifacts may be stale relative to current dirty source. For example, current mixed-domain source writes extra metadata that existing generated JSON files do not contain.
-- The older single-area `prepare_dataset()` path in `src/main_pipeline.py` appears to apply a second label shift after preprocessing already remaps labels. With current `dataset.use_mixed_domain: true`, this path is not active.
-- `run_inference()` checks for old output names such as `test_landslide_susceptibility.tif` before skipping, but writes `test_susceptibility.tif`. This can cause inference to rerun when newer outputs already exist.
-- `validate_v2_config.py` encodes older V2 expectations and currently fails against the present config.
-- Some shell scripts include old claims, expected metrics, or prompts. They are syntactically valid helpers, not source of truth.
-- `validate_spatial_split.py` contains a hard-coded train/test row split and may be stale if merged metadata changes.
-- `preprocess_pipeline.py` is a standalone preprocessing runner with older logic and should not be confused with the active end-to-end path in `src/main_pipeline.py`.
-- Historical logs show runs with different encoders, losses, orthophoto band counts, and class-map logic.
-- CRF is optional at runtime even when enabled in config; it depends on successful `pydensecrf` import.
-- CUDA is disabled in current config. The code has a runtime CUDA test, but CPU is the current expected path.
+- Stale preprocessing, merge, and tile artifacts now have schema/config checks before they are reused.
+- The single-area `prepare_dataset()` path no longer shifts labels a second time after preprocessing.
+- Inference skip checks use the same current output names that inference writes.
+- Redundant standalone helper Python scripts were removed in favor of `manage.py`.
+- Shell scripts are thin wrappers over `manage.py` and no longer contain old prompts, metric claims, or install side effects.
+- Historical tracked training logs were removed from source.
+- `pydensecrf` setup is asserted when CRF is enabled; missing CRF support is a hard setup error.
+- Dynamic World and `force_download` config keys now sit under `preprocessing.external_lulc`.
+
+Remaining cautions:
+
+- Existing generated artifacts may be older than the current schema and will be regenerated when the pipeline reaches those stages.
+- CUDA is disabled in current config. The code has a runtime CUDA test, but CPU is the expected path while `use_cuda: false`.
+- Full retraining/inference is expensive and was not part of the sharp-edge cleanup.
 
 ## 8. Safe Operating Procedures
 
 Before running:
 
 ```bash
-.venv/bin/python -m compileall -q inputs.py validate_spatial_split.py validate_v2_config.py src
+.venv/bin/python manage.py check-crf
+.venv/bin/python manage.py validate --config config.yaml
+.venv/bin/python -m compileall -q inputs.py manage.py src
 ```
 
 For a normal resumable run:
 
 ```bash
-.venv/bin/python -m src.main_pipeline
+.venv/bin/python manage.py pipeline
 ```
 
 For a clean rebuild:
 
 ```bash
-.venv/bin/python -m src.main_pipeline --force_recreate
+.venv/bin/python manage.py pipeline --force_recreate
 ```
 
 Use `--force_recreate` after changing:
@@ -395,6 +401,12 @@ After training/inference:
 
 ```bash
 .venv/bin/python -m src.evaluate --analysis_only
+```
+
+To inspect current mixed-domain split separation:
+
+```bash
+.venv/bin/python manage.py validate-spatial --metadata artifacts/derived/merged/merged_metadata.json
 ```
 
 With ground truth, pass explicit paths as shown in section 4.5.

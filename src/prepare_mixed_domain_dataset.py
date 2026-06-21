@@ -17,9 +17,120 @@ from rasterio.warp import reproject, calculate_default_transform
 from sklearn.model_selection import train_test_split
 
 
+MIXED_MERGE_SCHEMA_VERSION = 2
+MIXED_DATASET_SCHEMA_VERSION = 2
+
+
 def debug_print(msg: str):
     """Print debug message."""
     print(f"[prepare_mixed_domain] {msg}")
+
+
+def merge_artifacts_current(
+    merged_features_path: str,
+    merged_labels_path: str,
+    merged_mask_path: str,
+    metadata_path: str,
+) -> Tuple[bool, str]:
+    """Validate merged raster artifacts before reusing them."""
+    required_paths = [
+        merged_features_path,
+        merged_labels_path,
+        merged_mask_path,
+        metadata_path,
+    ]
+    missing = [path for path in required_paths if not os.path.exists(path)]
+    if missing:
+        return False, f"missing merged artifacts: {missing}"
+
+    try:
+        with open(metadata_path, "r") as f:
+            metadata = json.load(f)
+    except (OSError, json.JSONDecodeError) as exc:
+        return False, f"merged metadata unreadable: {exc}"
+
+    if metadata.get("schema_version") != MIXED_MERGE_SCHEMA_VERSION:
+        return False, "merged metadata schema is missing or stale"
+
+    for area_name in ("train_area", "test_area"):
+        area = metadata.get(area_name, {})
+        for key in ("height", "width", "row_range", "source", "transform"):
+            if key not in area:
+                return False, f"merged metadata missing {area_name}.{key}"
+
+    try:
+        with rasterio.open(merged_features_path) as features_src:
+            merged = metadata.get("merged", {})
+            if features_src.count != merged.get("channels"):
+                return False, "merged feature channel count differs from metadata"
+            if features_src.height != merged.get("height"):
+                return False, "merged feature height differs from metadata"
+            if features_src.width != merged.get("width"):
+                return False, "merged feature width differs from metadata"
+            feature_shape = (features_src.height, features_src.width)
+        with rasterio.open(merged_labels_path) as labels_src:
+            if (labels_src.height, labels_src.width) != feature_shape:
+                return False, "merged label shape differs from features"
+        with rasterio.open(merged_mask_path) as mask_src:
+            if (mask_src.height, mask_src.width) != feature_shape:
+                return False, "merged mask shape differs from features"
+    except rasterio.errors.RasterioIOError as exc:
+        return False, f"merged raster unreadable: {exc}"
+
+    return True, "current"
+
+
+def mixed_dataset_artifacts_current(
+    splits_path: str,
+    summary_path: str,
+    structure_cfg: Dict,
+    config: Dict,
+) -> Tuple[bool, str]:
+    """Validate mixed-domain tile artifacts before resuming."""
+    if not os.path.exists(splits_path) or not os.path.exists(summary_path):
+        return False, "splits or dataset summary missing"
+
+    try:
+        with open(summary_path, "r") as f:
+            summary = json.load(f)
+        with open(splits_path, "r") as f:
+            splits = json.load(f)
+    except (OSError, json.JSONDecodeError) as exc:
+        return False, f"dataset metadata unreadable: {exc}"
+
+    dataset_cfg = config["dataset"]
+    smoothing_cfg = config["preprocessing"].get("label_smoothing", {})
+    use_soft_labels = bool(smoothing_cfg.get("enabled", False))
+    expected_smoothing = {
+        "enabled": use_soft_labels,
+        "type": smoothing_cfg.get("type", "none") if use_soft_labels else "none",
+        "alpha": smoothing_cfg.get("alpha", 0.0) if use_soft_labels else 0.0,
+        "sigma": smoothing_cfg.get("sigma", 0.0) if use_soft_labels else 0.0,
+    }
+
+    if summary.get("schema_version") != MIXED_DATASET_SCHEMA_VERSION:
+        return False, "dataset summary schema is missing or stale"
+    if summary.get("mixed_domain") is not True:
+        return False, "dataset summary is not mixed-domain"
+    if summary.get("tile_size") != dataset_cfg["tile_size"]:
+        return False, "dataset tile_size changed"
+    if summary.get("tile_overlap") != dataset_cfg["tile_overlap"]:
+        return False, "dataset tile_overlap changed"
+    if summary.get("label_smoothing") != expected_smoothing:
+        return False, "label smoothing config changed"
+
+    for split_name, tile_names in splits.items():
+        if not tile_names:
+            continue
+        tile_dir = os.path.join(structure_cfg["tiles_dir"], split_name)
+        label_dir = os.path.join(structure_cfg["labels_dir"], split_name)
+        for tile_name in [tile_names[0], tile_names[-1]]:
+            if not os.path.exists(os.path.join(tile_dir, tile_name)):
+                return False, f"missing tile file for {split_name}: {tile_name}"
+            if not os.path.exists(os.path.join(label_dir, tile_name)):
+                return False, f"missing label file for {split_name}: {tile_name}"
+
+    return True, "current"
 
 
 def merge_area_stacks(
@@ -36,17 +147,19 @@ def merge_area_stacks(
     merged_mask_path = os.path.join(output_dir, "merged_mask.tif")
     metadata_path = os.path.join(output_dir, "merged_metadata.json")
 
-    if (
-        os.path.exists(merged_features_path)
-        and os.path.exists(merged_labels_path)
-        and os.path.exists(merged_mask_path)
-        and os.path.exists(metadata_path)
-        and not force_recreate
-    ):
+    merge_current, merge_reason = merge_artifacts_current(
+        merged_features_path,
+        merged_labels_path,
+        merged_mask_path,
+        metadata_path,
+    )
+    if merge_current and not force_recreate:
         debug_print("Merged stacks already exist, loading metadata")
         with open(metadata_path, "r") as f:
             metadata = json.load(f)
         return merged_features_path, merged_labels_path, merged_mask_path, metadata
+    elif not force_recreate:
+        debug_print(f"Merged stacks are stale ({merge_reason}); regenerating")
 
     debug_print("Merging training and test area stacks...")
 
@@ -180,6 +293,7 @@ def merge_area_stacks(
 
     # Save metadata (§2.3 fix: include per-area transforms for correct GeoTIFF export)
     metadata = {
+        "schema_version": MIXED_MERGE_SCHEMA_VERSION,
         "train_area": {
             "height": train_features.shape[1],
             "width": train_features.shape[2],
@@ -282,8 +396,15 @@ def prepare_mixed_domain_dataset(
         and os.path.exists(summary_path)
         and not force_recreate
     ):
-        debug_print("Dataset artifacts already exist, skipping")
-        return
+        dataset_current, dataset_reason = mixed_dataset_artifacts_current(
+            splits_path, summary_path, structure_cfg, config
+        )
+        if dataset_current:
+            debug_print("Dataset artifacts already exist, skipping")
+            return
+        debug_print(f"Dataset artifacts are stale ({dataset_reason}); regenerating")
+    elif os.path.exists(splits_path) or os.path.exists(summary_path):
+        debug_print("Partial dataset artifacts found, regenerating")
 
     debug_print(f"Preparing mixed-domain dataset (force_recreate={force_recreate})")
 
@@ -754,6 +875,7 @@ def prepare_mixed_domain_dataset(
         json.dump(tile_records, f, indent=2)
 
     dataset_summary = {
+        "schema_version": MIXED_DATASET_SCHEMA_VERSION,
         "tile_size": tile_size,
         "tile_overlap": tile_overlap,
         "tile_counts": {split: len(names) for split, names in tile_records.items()},
@@ -763,6 +885,7 @@ def prepare_mixed_domain_dataset(
             "enabled": use_soft_labels,
             "type": label_smoothing_cfg.get("type", "none") if use_soft_labels else "none",
             "alpha": label_smoothing_cfg.get("alpha", 0.0) if use_soft_labels else 0.0,
+            "sigma": label_smoothing_cfg.get("sigma", 0.0) if use_soft_labels else 0.0,
         },
         "train_area_contribution": {
             "train": len(train_tiles_from_train_area),
