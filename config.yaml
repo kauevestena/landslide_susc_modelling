@@ -137,8 +137,8 @@ inference:
   mc_dropout_iterations: 0
   batch_size: 2
   smoothing_alpha: 0.1  # ADJUSTED: Gentle probability smoothing (was 0.0 or 0.5)
-  class_breaks: [0.33, 0.67]  # FIXED: Aligned with ordinal scale [0, 1] for 3 equal classes
-  temperature_override: 1.0  # FIXED: Disabled temperature override (was 2.5 - too aggressive)
+  class_breaks: null  # Use argmax of class probabilities (principled classification)
+  temperature_override: null  # Use learned temperature from calibration (T=1.37)
   # Production-ready threshold presets
   threshold_mode: safety  # Options: safety (high recall), balanced, precision (high precision)
   threshold_presets:

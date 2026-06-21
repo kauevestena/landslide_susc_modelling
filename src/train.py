@@ -14,6 +14,7 @@ from torch.utils.data import Dataset, DataLoader
 import segmentation_models_pytorch as smp
 from sklearn.metrics import roc_auc_score, average_precision_score
 from sklearn.isotonic import IsotonicRegression
+from scipy.ndimage import gaussian_filter as scipy_gaussian_filter
 
 from src.metrics import select_optimal_thresholds
 from src.visualize import generate_all_plots
@@ -181,12 +182,24 @@ class LandslideDataset(Dataset):
     def _apply_augmentations(
         self, tile: np.ndarray, label: np.ndarray
     ) -> Tuple[np.ndarray, np.ndarray]:
+        """
+        Apply geometric and photometric augmentations to a training tile.
+
+        Geometric augmentations (flip, rotate90) are applied to both tile and label.
+        Photometric augmentations (brightness, contrast, blur, noise) are applied
+        only to the tile features.
+
+        §13 fix: brightness, contrast, saturation, hue, and blur_prob were declared
+        in config.yaml but never applied. Now they are wired up.
+        """
         cfg = self.augment_config
         if self.split != "train" or not cfg:
             return tile, label
 
         # Determine if label is soft (3D) or hard (2D)
         is_soft = label.ndim == 3
+
+        # --- Geometric augmentations (affect both tile and label) ---
 
         if cfg.get("flip_prob", 0) > 0 and np.random.rand() < cfg["flip_prob"]:
             tile = tile[:, :, ::-1]
@@ -210,6 +223,29 @@ class LandslideDataset(Dataset):
             else:
                 label = np.rot90(label, k=k)
 
+        # --- Photometric augmentations (tile only) ---
+
+        # Brightness: additive shift (simulates illumination change)
+        brightness = cfg.get("brightness", 0.0)
+        if brightness and brightness > 0 and np.random.rand() < 0.5:
+            factor = np.random.uniform(-brightness, brightness)
+            tile = tile + factor
+
+        # Contrast: multiplicative scaling (simulates atmospheric effects)
+        contrast = cfg.get("contrast", 0.0)
+        if contrast and contrast > 0 and np.random.rand() < 0.5:
+            factor = np.random.uniform(1.0 - contrast, 1.0 + contrast)
+            tile = tile * factor
+
+        # Gaussian blur (simulates sensor defocus / resolution degradation)
+        blur_prob = cfg.get("blur_prob", 0.0)
+        if blur_prob and blur_prob > 0 and np.random.rand() < blur_prob:
+            sigma = np.random.uniform(0.5, 1.5)
+            # Apply blur to each channel independently
+            for c in range(tile.shape[0]):
+                tile[c] = scipy_gaussian_filter(tile[c], sigma=sigma)
+
+        # Gaussian noise
         noise_std = cfg.get("noise_std", 0.0)
         if noise_std and noise_std > 0:
             noise = np.random.normal(0.0, noise_std, size=tile.shape).astype(np.float32)
@@ -849,6 +885,8 @@ def evaluate(
     total = 0
     prob_list: List[np.ndarray] = []
     label_list: List[np.ndarray] = []
+    ordinal_score_list: List[np.ndarray] = []
+    ordinal_target_list: List[np.ndarray] = []
 
     with torch.no_grad():
         for tiles, labels in loader:
@@ -894,6 +932,16 @@ def evaluate(
                 label_list.append(
                     (labels_valid == positive_class).cpu().numpy().astype(np.uint8)
                 )
+                # §9 fix: Also collect ordinal susceptibility scores for calibration
+                # ordinal_score = 0·P(0) + 0.5·P(1) + 1.0·P(2) for 3-class
+                if num_classes == 3:
+                    p0 = probs[:, 0, :, :][mask].detach().cpu().numpy()
+                    p1 = probs[:, 1, :, :][mask].detach().cpu().numpy()
+                    p2 = probs[:, 2, :, :][mask].detach().cpu().numpy()
+                    ordinal_scores = 0.0 * p0 + 0.5 * p1 + 1.0 * p2
+                    ordinal_targets = labels_valid.cpu().numpy().astype(np.float32) / (num_classes - 1)
+                    ordinal_score_list.append(ordinal_scores)
+                    ordinal_target_list.append(ordinal_targets)
 
     avg_loss = total_loss / max(len(loader), 1)
     metrics = compute_metrics_from_confusion(
@@ -911,7 +959,15 @@ def evaluate(
         probs_concat = None
         labels_concat = None
 
-    return avg_loss, metrics, (probs_concat, labels_concat)
+    # §9 fix: Also return ordinal calibration data
+    if collect_probs and ordinal_score_list:
+        ordinal_scores_concat = np.concatenate(ordinal_score_list)
+        ordinal_targets_concat = np.concatenate(ordinal_target_list)
+    else:
+        ordinal_scores_concat = None
+        ordinal_targets_concat = None
+
+    return avg_loss, metrics, (probs_concat, labels_concat), (ordinal_scores_concat, ordinal_targets_concat)
 
 
 def train_model(
@@ -1138,6 +1194,7 @@ def train_model(
     best_epoch = -1
     best_metrics: Optional[Dict[str, float]] = None
     best_calibration: Optional[Tuple[np.ndarray, np.ndarray]] = None
+    best_ordinal_calibration: Optional[Tuple[np.ndarray, np.ndarray]] = None
     patience = training_cfg.get("early_stopping_patience", 10)
     epochs_no_improve = 0
     history: List[Dict] = []
@@ -1178,7 +1235,7 @@ def train_model(
 
         train_loss /= max(len(train_loader), 1)
 
-        val_loss, val_metrics, calibration_data = evaluate(
+        val_loss, val_metrics, calibration_data, ordinal_calibration_data = evaluate(
             model,
             val_loader,
             loss_fn,
@@ -1206,6 +1263,7 @@ def train_model(
             best_epoch = epoch
             best_metrics = val_metrics
             best_calibration = calibration_data
+            best_ordinal_calibration = ordinal_calibration_data
             torch.save(
                 {
                     "state_dict": model.state_dict(),
@@ -1257,6 +1315,26 @@ def train_model(
                 calibrator_path,
             )
 
+    # §9 fix: Fit ordinal calibrator on ordinal susceptibility score
+    ordinal_calibrator_path = None
+    if (
+        best_ordinal_calibration
+        and best_ordinal_calibration[0] is not None
+        and best_ordinal_calibration[0].size > 0
+    ):
+        ord_scores, ord_targets = best_ordinal_calibration
+        if len(np.unique(ord_targets)) > 1:
+            ordinal_calibrator = IsotonicRegression(out_of_bounds="clip")
+            ordinal_calibrator.fit(ord_scores, ord_targets)
+            ordinal_calibrator_path = os.path.join(
+                experiments_dir, "ordinal_calibrator.joblib"
+            )
+            joblib.dump(
+                {"calibrator": ordinal_calibrator, "type": "ordinal_score"},
+                ordinal_calibrator_path,
+            )
+            print(f"[train] Saved ordinal calibrator to: {ordinal_calibrator_path}")
+
     # Evaluate on test set if available
     test_metrics = None
     test_calibration = None
@@ -1267,7 +1345,7 @@ def train_model(
         model.load_state_dict(checkpoint["state_dict"])
         model = model.to(device)
 
-        test_loss, test_metrics, test_calibration = evaluate(
+        test_loss, test_metrics, test_calibration, _test_ordinal = evaluate(
             model,
             test_loader,
             loss_fn,
@@ -1346,6 +1424,7 @@ def train_model(
     return {
         "model_path": best_model_path,
         "calibrator_path": calibrator_path,
+        "ordinal_calibrator_path": ordinal_calibrator_path,
         "metrics_path": metrics_path,
         "channel_metadata_path": train_artifacts.metadata_path,
         "normalization_stats_path": train_artifacts.normalization_stats_path,

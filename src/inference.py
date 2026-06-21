@@ -314,6 +314,7 @@ def apply_crf_tile(
     color_weight: float = 3.0,
     compat_spatial: float = 3.0,
     compat_bilateral: float = 10.0,
+    bilateral_channel_indices: Optional[List[int]] = None,
 ) -> np.ndarray:
     """
     Apply CRF to a single tile (internal helper for apply_crf).
@@ -322,6 +323,8 @@ def apply_crf_tile(
         probabilities: Class probabilities [num_classes, H, W]
         features: Input features [C, H, W]
         mask: Valid pixel mask [H, W]
+        bilateral_channel_indices: Indices of 3 channels to use for bilateral
+            filtering (e.g., orthophoto RGB). If None, uses first 3 channels.
         Other params: CRF hyperparameters
 
     Returns:
@@ -329,8 +332,22 @@ def apply_crf_tile(
     """
     num_classes, height, width = probabilities.shape
 
-    # Normalize features to 0-255 range for CRF (use first 3 channels if available)
-    if features.shape[0] >= 3:
+    # Select channels for bilateral CRF filter.
+    # §10 fix: Use orthophoto RGB channels (not terrain derivatives) for the
+    # bilateral signal, since the CRF bilateral kernel assumes perceptual
+    # colour-space similarity.
+    if bilateral_channel_indices is not None and len(bilateral_channel_indices) >= 3:
+        indices = bilateral_channel_indices[:3]
+        valid_indices = [i for i in indices if i < features.shape[0]]
+        if len(valid_indices) >= 3:
+            feat_for_crf = features[valid_indices].copy()
+        else:
+            logger.warning(
+                f"[apply_crf_tile] Bilateral indices {indices} out of range for "
+                f"{features.shape[0]} channels, falling back to first 3"
+            )
+            feat_for_crf = features[:3].copy() if features.shape[0] >= 3 else np.repeat(features[:1], 3, axis=0)
+    elif features.shape[0] >= 3:
         feat_for_crf = features[:3].copy()
     else:
         feat_for_crf = np.repeat(features[:1], 3, axis=0)
@@ -396,6 +413,7 @@ def apply_crf(
     compat_bilateral: float = 10.0,
     tile_size: int = 2048,
     overlap: int = 128,
+    bilateral_channel_indices: Optional[List[int]] = None,
 ) -> np.ndarray:
     """
     Apply Conditional Random Field (CRF) post-processing for spatial coherence.
@@ -414,6 +432,8 @@ def apply_crf(
         compat_bilateral: Compatibility weight for bilateral kernel
         tile_size: Size of tiles to process (memory management)
         overlap: Overlap between tiles for blending
+        bilateral_channel_indices: Indices of 3 channels to use for bilateral
+            filtering (e.g., orthophoto RGB). If None, uses first 3 channels.
 
     Returns:
         Refined probabilities [num_classes, H, W]
@@ -443,6 +463,7 @@ def apply_crf(
             color_weight,
             compat_spatial,
             compat_bilateral,
+            bilateral_channel_indices,
         )
 
     # For large rasters, process in tiles with blending
@@ -497,6 +518,7 @@ def apply_crf(
                 color_weight,
                 compat_spatial,
                 compat_bilateral,
+                bilateral_channel_indices,
             )
 
             # Create distance-based weight for blending
@@ -838,7 +860,7 @@ def run_inference(
     model.eval()
     logger.info("[run_inference] Model loaded and set to evaluation mode")
 
-    # Load calibrator
+    # Load calibrator (P(High) binary calibrator)
     calibrator_path = training_artifacts.get("calibrator_path")
     calibrator = None
     positive_class = config["dataset"].get("positive_class", num_classes - 1)
@@ -852,6 +874,17 @@ def run_inference(
         )
     else:
         logger.info("[run_inference] No calibrator found, using raw probabilities")
+
+    # §9 fix: Load ordinal calibrator for the primary susceptibility score
+    ordinal_calibrator_path = training_artifacts.get("ordinal_calibrator_path")
+    ordinal_calibrator = None
+    if ordinal_calibrator_path and os.path.exists(ordinal_calibrator_path):
+        logger.info(f"[run_inference] Loading ordinal calibrator from {ordinal_calibrator_path}")
+        ordinal_payload = joblib.load(ordinal_calibrator_path)
+        ordinal_calibrator = ordinal_payload.get("calibrator")
+        logger.info("[run_inference] Ordinal calibrator loaded for susceptibility score")
+    else:
+        logger.info("[run_inference] No ordinal calibrator found")
 
     temperature = 1.0
     temperature_path = training_artifacts.get("temperature_path")
@@ -986,6 +1019,28 @@ def run_inference(
         with rasterio.open(area.feature_stack_path) as src:
             features = src.read().astype(np.float32)
 
+        # §10 fix: Use orthophoto RGB channels for bilateral CRF filter instead
+        # of terrain derivatives. The bilateral kernel assumes perceptual
+        # colour-space similarity — terrain channels (DTM, slope, aspect) are not
+        # appropriate for this purpose.
+        bilateral_indices = None
+        ortho_indices = [
+            i for i, name in enumerate(channel_names)
+            if name.startswith("ortho_norm_band_")
+        ]
+        if len(ortho_indices) >= 3:
+            bilateral_indices = ortho_indices[:3]
+            ortho_names = [channel_names[i] for i in bilateral_indices]
+            logger.info(
+                f"[run_inference] CRF bilateral using orthophoto channels: "
+                f"{bilateral_indices} ({ortho_names})"
+            )
+        else:
+            logger.warning(
+                "[run_inference] Could not find >=3 orthophoto channels for CRF "
+                f"bilateral filter (found {len(ortho_indices)}), falling back to first 3 channels"
+            )
+
         probabilities = apply_crf(
             probabilities,
             features,
@@ -997,6 +1052,7 @@ def run_inference(
             compat_bilateral=crf_config.get("compat_bilateral", 10.0),
             tile_size=crf_config.get("tile_size", 2048),
             overlap=crf_config.get("overlap", 128),
+            bilateral_channel_indices=bilateral_indices,
         )
         logger.info("[run_inference] CRF post-processing complete")
 
@@ -1075,10 +1131,21 @@ def run_inference(
         logger.info("[run_inference] Applying calibration to high-risk probability...")
         calibrated = calibrator.predict(susceptibility_high[valid_pixels])
         susceptibility_high[valid_pixels] = calibrated
-        logger.info("[run_inference] Calibration applied")
+        logger.info("[run_inference] Calibration applied to P(High)")
     else:
         logger.info(
-            "[run_inference] Skipping calibration (no calibrator or no valid pixels)"
+            "[run_inference] Skipping P(High) calibration (no calibrator or no valid pixels)"
+        )
+
+    # §9 fix: Apply ordinal calibrator to the primary susceptibility score
+    if ordinal_calibrator is not None and np.any(valid_pixels):
+        logger.info("[run_inference] Applying ordinal calibrator to susceptibility score...")
+        calibrated_ordinal = ordinal_calibrator.predict(susceptibility_ordinal[valid_pixels])
+        susceptibility_ordinal[valid_pixels] = calibrated_ordinal
+        logger.info("[run_inference] Ordinal calibration applied to primary susceptibility")
+    else:
+        logger.info(
+            "[run_inference] Skipping ordinal calibration (no ordinal calibrator or no valid pixels)"
         )
 
     # Use ordinal score as primary susceptibility
@@ -1111,34 +1178,22 @@ def run_inference(
     else:
         logger.info(f"[run_inference] Using default threshold: {optimal_threshold}")
 
-    # Generate class map
+    # Generate class map using argmax of class probabilities (principled approach)
+    # Previously this had competing strategies (digitize on ordinal score, threshold
+    # override). Now we use a single unambiguous strategy: argmax for multi-class,
+    # threshold only for binary.
     logger.info("[run_inference] Generating class map...")
     positive_binary = (susceptibility >= optimal_threshold).astype(np.uint8)
 
-    class_breaks = config["inference"].get("class_breaks")
     class_map = np.argmax(probabilities, axis=0).astype(np.uint8)
 
     if num_classes == 2:
         class_map = positive_binary
         logger.info("[run_inference] Binary classification: using threshold-based map")
     else:
-        if class_breaks and len(class_breaks) == num_classes - 1:
-            logger.info(
-                f"[run_inference] Using configured class breaks for ordinal mapping: {class_breaks}"
-            )
-            sorted_breaks = sorted(class_breaks)
-            digitized = np.digitize(susceptibility, bins=sorted_breaks).astype(np.uint8)
-            digitized[digitized >= num_classes] = num_classes - 1
-            class_map = digitized
-        else:
-            if class_breaks:
-                logger.warning(
-                    "[run_inference] class_breaks length mismatch; falling back to argmax strategy"
-                )
-            class_map = np.where(positive_binary, positive_class, class_map)
-            logger.info(
-                "[run_inference] Multi-class classification: applied threshold for positive class"
-            )
+        logger.info(
+            "[run_inference] Multi-class classification: using argmax of class probabilities"
+        )
 
     class_map[~valid_pixels] = 255
     logger.info(

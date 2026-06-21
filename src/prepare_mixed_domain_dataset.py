@@ -78,12 +78,23 @@ def merge_area_stacks(
     with rasterio.open(test_artifacts.mask_path) as src:
         test_mask = src.read(1)
 
-    # Check if CRS and resolution match
+    # §2.1 fix: Validate CRS match — raise explicit error instead of silently continuing
     if train_crs != test_crs:
-        debug_print(f"WARNING: CRS mismatch - train:{train_crs}, test:{test_crs}")
-        debug_print("Reprojecting test area to match training CRS...")
-        # Reproject test area to match training CRS
-        # (Implementation would go here - for now, assume they match)
+        raise ValueError(
+            f"CRS mismatch between train ({train_crs}) and test ({test_crs}) areas. "
+            f"Reproject one of the inputs so both share the same CRS before running "
+            f"the mixed-domain pipeline. Vertical concatenation requires identical CRS."
+        )
+
+    # Also validate resolution match
+    train_res = (abs(train_transform.a), abs(train_transform.e))
+    test_res = (abs(test_transform.a), abs(test_transform.e))
+    res_tol = 1e-6
+    if abs(train_res[0] - test_res[0]) > res_tol or abs(train_res[1] - test_res[1]) > res_tol:
+        raise ValueError(
+            f"Resolution mismatch between train ({train_res}) and test ({test_res}) areas. "
+            f"Resample one of the inputs to match before running the mixed-domain pipeline."
+        )
 
     # Check channel count
     if train_features.shape[0] != test_features.shape[0]:
@@ -157,7 +168,7 @@ def merge_area_stacks(
         dst.write(merged_features.astype(np.float32))
 
     label_profile = merged_profile.copy()
-    label_profile.update({"count": 1, "dtype": "uint8", "nodata": 0})
+    label_profile.update({"count": 1, "dtype": "uint8", "nodata": 255})
 
     debug_print(f"Saving merged labels to {merged_labels_path}")
     with rasterio.open(merged_labels_path, "w", **label_profile) as dst:
@@ -167,19 +178,21 @@ def merge_area_stacks(
     with rasterio.open(merged_mask_path, "w", **label_profile) as dst:
         dst.write(merged_mask, 1)
 
-    # Save metadata
+    # Save metadata (§2.3 fix: include per-area transforms for correct GeoTIFF export)
     metadata = {
         "train_area": {
             "height": train_features.shape[1],
             "width": train_features.shape[2],
             "row_range": [0, train_features.shape[1]],
             "source": train_artifacts.feature_stack_path,
+            "transform": list(train_transform)[:6],
         },
         "test_area": {
             "height": test_features.shape[1],
             "width": test_features.shape[2],
             "row_range": [train_features.shape[1], merged_height],
             "source": test_artifacts.feature_stack_path,
+            "transform": list(test_transform)[:6],
         },
         "merged": {
             "height": merged_height,
@@ -251,6 +264,7 @@ def prepare_mixed_domain_dataset(
     """
     Prepare dataset from merged training and test areas.
     Exports tiles as both .npy (fast training) and .tif (spatial inspection).
+    Supports soft label smoothing when configured (§6 fix).
     """
     debug_print("=" * 80)
     debug_print("PREPARING MIXED-DOMAIN DATASET")
@@ -306,6 +320,41 @@ def prepare_mixed_domain_dataset(
             metadata = json.load(f)
             channel_names = metadata.get("channel_names", None)
 
+    # Apply label smoothing if enabled (§6 fix: was missing from mixed-domain path)
+    label_smoothing_cfg = config["preprocessing"].get("label_smoothing", {})
+    use_soft_labels = label_smoothing_cfg.get("enabled", False)
+    soft_labels = None
+
+    if use_soft_labels:
+        from src.soft_labels import apply_label_smoothing, validate_soft_labels
+
+        smoothing_type = label_smoothing_cfg.get("type", "ordinal")
+        alpha = label_smoothing_cfg.get("alpha", 0.1)
+        sigma = label_smoothing_cfg.get("sigma", 1.0)
+        num_classes = config["model"]["out_classes"]
+
+        debug_print(
+            f"Applying {smoothing_type} label smoothing "
+            f"(alpha={alpha}, sigma={sigma}, num_classes={num_classes})"
+        )
+
+        soft_labels = apply_label_smoothing(
+            labels,
+            smoothing_type=smoothing_type,
+            num_classes=num_classes,
+            alpha=alpha,
+            sigma=sigma,
+            ignore_value=255,
+        )
+
+        try:
+            validate_soft_labels(soft_labels)
+            debug_print("Soft labels validated successfully")
+        except AssertionError as e:
+            debug_print(f"WARNING - soft label validation failed: {e}")
+    else:
+        debug_print("Using hard labels (label smoothing disabled)")
+
     # Step 3: Create tile directories
     tile_size = dataset_cfg["tile_size"]
     tile_overlap = dataset_cfg["tile_overlap"]
@@ -349,7 +398,10 @@ def prepare_mixed_domain_dataset(
             tile_mask = valid_mask[y : y + tile_size, x : x + tile_size]
             if tile_mask.mean() >= min_valid_fraction:
                 tile_labels = labels[y : y + tile_size, x : x + tile_size]
-                valid_pixels = tile_labels != 0
+                # Check for valid labelled pixels (not nodata=255).
+                # Previously used `tile_labels != 0` which dropped pure Low-risk
+                # tiles (class 0) — introducing systematic positive bias (§1.3).
+                valid_pixels = tile_labels != 255
                 if np.any(valid_pixels):
                     candidate_positions.append((y, x))
 
@@ -501,7 +553,95 @@ def prepare_mixed_domain_dataset(
         f"  Test from train_area={len(test_tiles_from_train_area)}, test_area={len(test_tiles_from_test_area)}"
     )
 
-    # Step 7: Save tiles
+    # Step 7: §3 fix — Recompute normalization stats from TRAINING tiles only
+    # The features array was normalized using full train-area stats (computed before
+    # the spatial split). This leaks val/test tile information into the normalisation.
+    # Fix: recompute stats from training tiles only, apply linear correction.
+    normalization_stats_path = os.path.join(
+        config["project_structure"]["metadata_dir"], "normalization_stats.json"
+    )
+    if os.path.exists(normalization_stats_path) and len(train_tiles) > 0:
+        debug_print("§3 fix: Recomputing normalization stats from training tiles only...")
+        with open(normalization_stats_path, "r") as f:
+            old_stats = json.load(f)
+
+        old_mean = np.array(old_stats["mean"], dtype=np.float32)
+        old_std = np.array(old_stats["std"], dtype=np.float32)
+        epsilon = old_stats.get("epsilon", 1e-7)
+        num_ch = features.shape[0]
+
+        # Accumulate per-channel stats from training tiles only
+        ch_sum = np.zeros(num_ch, dtype=np.float64)
+        ch_sq_sum = np.zeros(num_ch, dtype=np.float64)
+        ch_count = np.zeros(num_ch, dtype=np.float64)
+
+        for y, x in train_tiles:
+            tile_f = features[:, y : y + tile_size, x : x + tile_size]
+            tile_m = valid_mask[y : y + tile_size, x : x + tile_size]
+            if not np.any(tile_m):
+                continue
+            # Denormalize back to raw values: raw = normalized * std + mean
+            for c in range(num_ch):
+                vals = tile_f[c][tile_m].astype(np.float64)
+                raw_vals = vals * old_std[c] + old_mean[c]
+                ch_sum[c] += raw_vals.sum()
+                ch_sq_sum[c] += (raw_vals ** 2).sum()
+                ch_count[c] += raw_vals.size
+
+        # Compute clean stats
+        new_mean = np.where(ch_count > 0, ch_sum / ch_count, old_mean.astype(np.float64))
+        new_var = np.where(
+            ch_count > 1,
+            ch_sq_sum / ch_count - new_mean ** 2,
+            old_std.astype(np.float64) ** 2,
+        )
+        new_std = np.sqrt(np.maximum(new_var, 0.0))
+        new_std = np.where(new_std < epsilon, epsilon, new_std)
+
+        # Log the delta
+        mean_delta = np.abs(new_mean - old_mean.astype(np.float64))
+        std_delta = np.abs(new_std - old_std.astype(np.float64))
+        debug_print(f"  Max mean delta: {mean_delta.max():.6f} (channel {np.argmax(mean_delta)})")
+        debug_print(f"  Max std delta:  {std_delta.max():.6f} (channel {np.argmax(std_delta)})")
+
+        # Apply linear correction to the entire features array in-place:
+        # new_normalized = (raw - new_mean) / new_std
+        #                = ((old_normalized * old_std + old_mean) - new_mean) / new_std
+        #                = old_normalized * (old_std / new_std) + (old_mean - new_mean) / new_std
+        new_mean_f32 = new_mean.astype(np.float32)
+        new_std_f32 = new_std.astype(np.float32)
+        for c in range(num_ch):
+            scale = old_std[c] / new_std_f32[c]
+            shift = (old_mean[c] - new_mean_f32[c]) / new_std_f32[c]
+            features[c] = features[c] * scale + shift
+
+        # Save clean stats (overwrite old file)
+        clean_stats = {
+            "strategy": old_stats.get("strategy", "zscore"),
+            "mean": new_mean_f32.tolist(),
+            "std": new_std_f32.tolist(),
+            "epsilon": epsilon,
+            "channel_names": old_stats.get("channel_names", []),
+            "note": "Recomputed from training tiles only (§3 fix)",
+        }
+        with open(normalization_stats_path, "w") as f:
+            json.dump(clean_stats, f, indent=2)
+        debug_print(f"  Saved clean normalization stats to {normalization_stats_path}")
+    else:
+        debug_print("Skipping normalization stat recomputation (no stats file or no training tiles)")
+
+    # Step 8: Save tiles
+    # §2.3 fix: Use correct per-area transforms for GeoTIFF exports
+    train_area_height = merge_metadata["train_area"]["height"]
+    train_area_transform = transform  # The merged transform == train area's transform
+    test_area_transform_raw = merge_metadata.get("test_area", {}).get("transform")
+    if test_area_transform_raw:
+        test_area_transform = Affine(*test_area_transform_raw)
+        debug_print("§2.3 fix: Using per-area transforms for GeoTIFF tile export")
+    else:
+        test_area_transform = None
+        debug_print("§2.3 fix: No test area transform in metadata, using merged transform")
+
     split_positions = {"train": train_tiles, "val": val_tiles, "test": test_tiles}
 
     tile_records = {"train": [], "val": [], "test": []}
@@ -532,17 +672,42 @@ def prepare_mixed_domain_dataset(
             np.save(
                 os.path.join(npy_tile_dir, tile_name), tile_features.astype(np.float32)
             )
-            np.save(
-                os.path.join(npy_label_dir, tile_name), tile_labels.astype(np.uint8)
-            )
+
+            # Save either soft or hard labels (§6 fix)
+            if use_soft_labels and soft_labels is not None:
+                # Extract soft label tile: shape (num_classes, tile_h, tile_w)
+                tile_soft_labels = soft_labels[
+                    :, y : y + tile_size, x : x + tile_size
+                ].copy()
+                # Zero out invalid pixels in all class channels
+                tile_soft_labels[:, ~tile_mask] = 0.0
+                np.save(
+                    os.path.join(npy_label_dir, tile_name),
+                    tile_soft_labels.astype(np.float32),
+                )
+            else:
+                np.save(
+                    os.path.join(npy_label_dir, tile_name),
+                    tile_labels.astype(np.uint8),
+                )
 
             # Save as .tif for inspection
+            # §2.3 fix: Use correct area transform for GeoTIFF metadata
+            if y >= train_area_height and test_area_transform is not None:
+                # Tile is from test area — use test area's transform with adjusted row
+                tile_geo_transform = test_area_transform
+                tile_geo_y = y - train_area_height
+            else:
+                # Tile is from train area — use train area's (merged) transform
+                tile_geo_transform = train_area_transform
+                tile_geo_y = y
+
             save_tile_as_geotiff(
                 tile_features,
                 os.path.join(tif_tile_dir, tif_name),
-                transform,
+                tile_geo_transform,
                 crs,
-                y,
+                tile_geo_y,
                 x,
                 channel_names,
             )
@@ -550,27 +715,40 @@ def prepare_mixed_domain_dataset(
             save_tile_as_geotiff(
                 tile_labels,
                 os.path.join(tif_label_dir, tif_name),
-                transform,
+                tile_geo_transform,
                 crs,
-                y,
+                tile_geo_y,
                 x,
                 ["labels"],
             )
 
             tile_records[split_name].append(tile_name)
 
-            # Count pixels per class
+            # Count pixels per class (works for both hard and soft labels)
             valid_pixels = tile_labels != 255
             if np.any(valid_pixels):
-                unique, counts = np.unique(
-                    tile_labels[valid_pixels], return_counts=True
-                )
-                for cls, count in zip(unique, counts):
-                    class_pixel_counts[str(int(cls))] = class_pixel_counts.get(
-                        str(int(cls)), 0
-                    ) + int(count)
+                if use_soft_labels and soft_labels is not None:
+                    # For soft labels, count fractional class membership
+                    tile_soft_valid = soft_labels[
+                        :, y : y + tile_size, x : x + tile_size
+                    ][:, valid_pixels]
+                    num_classes = config["model"]["out_classes"]
+                    for cls_idx in range(num_classes):
+                        count = float(np.sum(tile_soft_valid[cls_idx]))
+                        class_pixel_counts[str(cls_idx)] = (
+                            class_pixel_counts.get(str(cls_idx), 0) + count
+                        )
+                else:
+                    # For hard labels, count discrete assignments
+                    unique, counts = np.unique(
+                        tile_labels[valid_pixels], return_counts=True
+                    )
+                    for cls, count in zip(unique, counts):
+                        class_pixel_counts[str(int(cls))] = class_pixel_counts.get(
+                            str(int(cls)), 0
+                        ) + int(count)
 
-    # Step 8: Save splits and summary
+    # Step 9: Save splits and summary
     splits_json = os.path.join(structure_cfg["splits_dir"], "splits.json")
     with open(splits_json, "w") as f:
         json.dump(tile_records, f, indent=2)
@@ -581,6 +759,11 @@ def prepare_mixed_domain_dataset(
         "tile_counts": {split: len(names) for split, names in tile_records.items()},
         "class_pixel_counts": class_pixel_counts,
         "mixed_domain": True,
+        "label_smoothing": {
+            "enabled": use_soft_labels,
+            "type": label_smoothing_cfg.get("type", "none") if use_soft_labels else "none",
+            "alpha": label_smoothing_cfg.get("alpha", 0.0) if use_soft_labels else 0.0,
+        },
         "train_area_contribution": {
             "train": len(train_tiles_from_train_area),
             "val": len(val_tiles_from_train_area),

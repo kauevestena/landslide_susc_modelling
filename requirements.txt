@@ -19,6 +19,7 @@ joblib
 cython<3
 git+https://github.com/lucasb-eyer/pydensecrf.git@master#egg=pydensecrf
 requests
+pysheds
 
 # Optional: For Dynamic World fetching (requires Google Earth Engine setup)
 # earthengine-api

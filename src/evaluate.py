@@ -38,6 +38,8 @@ from sklearn.metrics import (
     confusion_matrix,
     f1_score,
     precision_recall_curve,
+    precision_score,
+    recall_score,
     roc_auc_score,
     roc_curve,
 )
@@ -191,6 +193,145 @@ def evaluate_binary_strategy(
     metrics["plot_pr"] = pr_path
 
     return metrics
+
+
+def _quadratic_weighted_kappa(y_true: np.ndarray, y_pred: np.ndarray, num_classes: int = 3) -> float:
+    """
+    Compute quadratic weighted kappa — an ordinal-aware agreement metric.
+
+    Unlike standard Cohen's kappa, this penalises disagreements proportionally
+    to the squared distance between classes. Predicting 'High' when truth is 'Low'
+    is penalised more than predicting 'Medium' when truth is 'Low'.
+    """
+    # Build quadratic weight matrix
+    weights = np.zeros((num_classes, num_classes), dtype=np.float64)
+    for i in range(num_classes):
+        for j in range(num_classes):
+            weights[i, j] = (i - j) ** 2 / (num_classes - 1) ** 2
+
+    # Observed confusion matrix
+    cm = confusion_matrix(y_true, y_pred, labels=list(range(num_classes)))
+    cm = cm.astype(np.float64)
+
+    # Expected confusion matrix under independence
+    hist_true = np.bincount(y_true, minlength=num_classes).astype(np.float64)
+    hist_pred = np.bincount(y_pred, minlength=num_classes).astype(np.float64)
+    expected = np.outer(hist_true, hist_pred)
+    expected = expected / expected.sum() if expected.sum() > 0 else expected
+
+    cm_norm = cm / cm.sum() if cm.sum() > 0 else cm
+
+    numerator = (weights * cm_norm).sum()
+    denominator = (weights * expected).sum()
+
+    if denominator == 0:
+        return 1.0  # Perfect agreement
+    return 1.0 - numerator / denominator
+
+
+def _evaluate_multiclass(
+    y_true: np.ndarray,
+    y_probs: np.ndarray,
+    num_classes: int,
+    output_dir: str,
+) -> Dict:
+    """
+    §12 fix: Proper multi-class evaluation with 3×3 confusion matrix,
+    per-class precision/recall/F1, and ordinal-aware metrics.
+
+    Args:
+        y_true: Ground truth class labels {0, 1, 2}
+        y_probs: Predicted susceptibility scores [0, 1]
+        num_classes: Number of classes (3)
+        output_dir: Directory for saving figures
+
+    Returns:
+        Dictionary of multi-class metrics
+    """
+    CLASS_NAMES = ["Low", "Medium", "High"]
+
+    # Generate predicted classes from susceptibility scores
+    # Use equal-percentile breaks based on class proportions in GT
+    # as the most unbiased mapping from continuous scores → ordinal classes
+    class_fractions = np.array([
+        np.mean(y_true == c) for c in range(num_classes)
+    ])
+    cum_fractions = np.cumsum(class_fractions)
+    breaks = [np.percentile(y_probs, 100 * cum_fractions[i])
+              for i in range(num_classes - 1)]
+
+    y_pred = np.digitize(y_probs, bins=breaks).astype(int)
+    y_pred = np.clip(y_pred, 0, num_classes - 1)
+
+    print(f"\n  Predicted class breaks (percentile-matched): {[f'{b:.4f}' for b in breaks]}")
+    for c in range(num_classes):
+        print(f"    Predicted {CLASS_NAMES[c]}: {np.sum(y_pred == c):,} pixels")
+
+    # 3×3 Confusion matrix
+    cm = confusion_matrix(y_true, y_pred, labels=list(range(num_classes)))
+
+    print(f"\n  3×3 Confusion Matrix:")
+    print(f"  {'':>12} {'Pred Low':>10} {'Pred Med':>10} {'Pred High':>10}")
+    for i, name in enumerate(CLASS_NAMES):
+        row = "  " + f"True {name:>6}" + "".join(f"{cm[i, j]:>10,}" for j in range(num_classes))
+        print(row)
+
+    # Per-class precision, recall, F1
+    per_class = {}
+    for c in range(num_classes):
+        tp = cm[c, c]
+        fp = cm[:, c].sum() - tp
+        fn = cm[c, :].sum() - tp
+        prec = tp / (tp + fp) if (tp + fp) > 0 else 0.0
+        rec = tp / (tp + fn) if (tp + fn) > 0 else 0.0
+        f1 = 2 * prec * rec / (prec + rec) if (prec + rec) > 0 else 0.0
+        iou = tp / (tp + fp + fn) if (tp + fp + fn) > 0 else 0.0
+
+        per_class[CLASS_NAMES[c]] = {
+            "precision": float(prec),
+            "recall": float(rec),
+            "f1": float(f1),
+            "iou": float(iou),
+            "support": int(cm[c, :].sum()),
+        }
+        print(f"\n  {CLASS_NAMES[c]:>6}: P={prec:.4f}  R={rec:.4f}  F1={f1:.4f}  IoU={iou:.4f}  Support={cm[c, :].sum():,}")
+
+    # Macro-averaged metrics
+    macro_prec = np.mean([v["precision"] for v in per_class.values()])
+    macro_rec = np.mean([v["recall"] for v in per_class.values()])
+    macro_f1 = np.mean([v["f1"] for v in per_class.values()])
+    macro_iou = np.mean([v["iou"] for v in per_class.values()])
+
+    # Overall accuracy
+    accuracy = np.trace(cm) / cm.sum() if cm.sum() > 0 else 0.0
+
+    # Cohen's kappa (standard)
+    kappa = cohen_kappa_score(y_true, y_pred)
+
+    # Quadratic weighted kappa (ordinal-aware)
+    qw_kappa = _quadratic_weighted_kappa(y_true, y_pred, num_classes)
+
+    print(f"\n  Macro Precision: {macro_prec:.4f}")
+    print(f"  Macro Recall:    {macro_rec:.4f}")
+    print(f"  Macro F1:        {macro_f1:.4f}")
+    print(f"  Macro IoU:       {macro_iou:.4f}")
+    print(f"  Accuracy:        {accuracy:.4f}")
+    print(f"  Cohen's Kappa:   {kappa:.4f}")
+    print(f"  QW Kappa:        {qw_kappa:.4f} (ordinal-aware)")
+
+    return {
+        "confusion_matrix": cm.tolist(),
+        "class_names": CLASS_NAMES,
+        "predicted_class_breaks": [float(b) for b in breaks],
+        "per_class": per_class,
+        "macro_precision": float(macro_prec),
+        "macro_recall": float(macro_rec),
+        "macro_f1": float(macro_f1),
+        "macro_iou": float(macro_iou),
+        "accuracy": float(accuracy),
+        "cohen_kappa": float(kappa),
+        "quadratic_weighted_kappa": float(qw_kappa),
+    }
 
 
 def load_raster(path: str) -> Tuple[np.ndarray, dict, Optional[float]]:
@@ -356,26 +497,65 @@ def evaluate_with_ground_truth(
     y_probs = susc_data[valid_pixels].flatten()
     y_true = gt_data[valid_pixels].flatten()
 
-    # CRITICAL FIX: Ground truth has values 1, 2, 3 (low, medium, high)
-    # These were remapped to 0, 1, 2 during training
-    # For ordinal evaluation, we have multiple strategies:
+    # §1.2 fix: Auto-detect ground truth encoding and normalise to {0, 1, 2}
+    # Training uses {0, 1, 2} (Low, Medium, High) but original GT may use {1, 2, 3}.
+    # Instead of hard-coding comparisons like `y_true == 3`, detect and remap.
+    unique_gt_raw, counts_gt_raw = np.unique(y_true, return_counts=True)
 
-    print(f"\n[evaluate] Ground truth value distribution:")
+    CLASS_NAMES = {0: "Low risk", 1: "Medium risk", 2: "High risk"}
+
+    if set(unique_gt_raw).issubset({1, 2, 3}):
+        # Original encoding {1, 2, 3} — remap to {0, 1, 2}
+        print(f"\n[evaluate] Detected original GT encoding {{1, 2, 3}} — remapping to {{0, 1, 2}}")
+        y_true = y_true - 1
+        gt_encoding = "original_1_2_3"
+    elif set(unique_gt_raw).issubset({0, 1, 2}):
+        # Already in model encoding {0, 1, 2}
+        print(f"\n[evaluate] Detected model GT encoding {{0, 1, 2}} — no remapping needed")
+        gt_encoding = "model_0_1_2"
+    elif set(unique_gt_raw).issubset({0, 1, 2, 3}):
+        # Mixed — could be {0=nodata, 1, 2, 3}
+        print(f"\n[evaluate] Detected encoding with 0 present alongside {{1, 2, 3}}")
+        print(f"  Treating 0 as nodata and remapping {{1, 2, 3}} → {{0, 1, 2}}")
+        valid_class_mask = y_true > 0
+        y_true = y_true[valid_class_mask] - 1
+        y_probs = y_probs[valid_class_mask]
+        gt_encoding = "original_with_nodata"
+    else:
+        print(f"\n[evaluate] WARNING: Unexpected GT values: {unique_gt_raw}")
+        print(f"  Proceeding without remapping — results may be incorrect")
+        gt_encoding = "unknown"
+
+    # Recompute distribution after remapping
     unique_gt, counts_gt = np.unique(y_true, return_counts=True)
+
+    print(f"\n[evaluate] Ground truth value distribution (after normalisation):")
     for val, count in zip(unique_gt, counts_gt):
-        print(f"  Value {int(val)}: {count:,} pixels ({100*count/len(y_true):.2f}%)")
+        label = CLASS_NAMES.get(int(val), f"Unknown({int(val)})")
+        print(f"  Class {int(val)} ({label}): {count:,} pixels ({100*count/len(y_true):.2f}%)")
 
     print(f"\n[evaluate] Susceptibility statistics:")
     print(f"  Min: {y_probs.min():.4f}, Max: {y_probs.max():.4f}")
     print(f"  Mean: {y_probs.mean():.4f}, Median: {np.median(y_probs):.4f}")
 
-    # Strategy 1: Binary - High risk (class 3) vs rest (classes 1-2)
-    print(f"\n[evaluate] STRATEGY 1: Binary evaluation (High vs Low+Medium)")
-    y_true_binary_high = (y_true == 3).astype(int)
+    num_classes = 3
 
-    # Strategy 2: Binary - Medium+High risk (classes 2-3) vs Low (class 1)
+    # =========================================================================
+    # §12 fix: TRUE MULTI-CLASS EVALUATION (3×3 confusion matrix + ordinal metrics)
+    # =========================================================================
+    print(f"\n[evaluate] {'='*60}")
+    print(f"[evaluate] MULTI-CLASS EVALUATION (3-class ordinal)")
+    print(f"[evaluate] {'='*60}")
+
+    multiclass_metrics = _evaluate_multiclass(y_true, y_probs, num_classes, output_dir)
+
+    # Strategy 1: Binary - High risk (class 2) vs rest (classes 0-1)
+    print(f"\n[evaluate] STRATEGY 1: Binary evaluation (High vs Low+Medium)")
+    y_true_binary_high = (y_true == 2).astype(int)
+
+    # Strategy 2: Binary - Medium+High risk (classes 1-2) vs Low (class 0)
     print(f"[evaluate] STRATEGY 2: Binary evaluation (Medium+High vs Low)")
-    y_true_binary_risk = (y_true >= 2).astype(int)
+    y_true_binary_risk = (y_true >= 1).astype(int)
 
     # Strategy 3: Ordinal - Treat as ordered categories and compute correlation
     print(f"[evaluate] STRATEGY 3: Ordinal correlation")
@@ -387,7 +567,7 @@ def evaluate_with_ground_truth(
     # Evaluate Strategy 1: High vs rest
     print(f"\n[evaluate] Computing metrics for Strategy 1 (High risk vs rest)...")
     print(
-        f"  Positive (Class 3): {np.sum(y_true_binary_high):,} ({100*np.mean(y_true_binary_high):.2f}%)"
+        f"  Positive (Class 2 - High): {np.sum(y_true_binary_high):,} ({100*np.mean(y_true_binary_high):.2f}%)"
     )
     metrics_high = evaluate_binary_strategy(
         y_true_binary_high, y_probs, threshold, output_dir, "high_vs_rest"
@@ -396,47 +576,50 @@ def evaluate_with_ground_truth(
     # Evaluate Strategy 2: Medium+High vs Low
     print(f"\n[evaluate] Computing metrics for Strategy 2 (Medium+High vs Low)...")
     print(
-        f"  Positive (Classes 2-3): {np.sum(y_true_binary_risk):,} ({100*np.mean(y_true_binary_risk):.2f}%)"
+        f"  Positive (Classes 1-2): {np.sum(y_true_binary_risk):,} ({100*np.mean(y_true_binary_risk):.2f}%)"
     )
     metrics_risk = evaluate_binary_strategy(
         y_true_binary_risk, y_probs, threshold, output_dir, "risk_vs_low"
     )
 
-    # Strategy 4: Medium vs Low (when Class 3 is absent or rare)
+    # Strategy 4: Medium vs Low (when High risk is absent or rare)
     metrics_medium = None
-    if 3 not in unique_gt or np.sum(y_true == 3) < 100:
+    if 2 not in unique_gt or np.sum(y_true == 2) < 100:
         print(f"\n[evaluate] STRATEGY 4: Binary evaluation (Medium vs Low)")
-        print(f"  Note: Class 3 absent or rare, evaluating Classes 1 vs 2 only")
+        print(f"  Note: Class 2 (High) absent or rare, evaluating Classes 0 vs 1 only")
 
-        # Filter to only Class 1 and Class 2
-        mask_12 = (y_true == 1) | (y_true == 2)
-        y_true_12 = y_true[mask_12]
-        y_probs_12 = y_probs[mask_12]
+        # Filter to only Class 0 and Class 1
+        mask_01 = (y_true == 0) | (y_true == 1)
+        y_true_01 = y_true[mask_01]
+        y_probs_01 = y_probs[mask_01]
 
-        y_true_binary_medium = (y_true_12 == 2).astype(int)
+        y_true_binary_medium = (y_true_01 == 1).astype(int)
 
         print(
-            f"  Positive (Class 2): {np.sum(y_true_binary_medium):,} ({100*np.mean(y_true_binary_medium):.2f}%)"
+            f"  Positive (Class 1 - Medium): {np.sum(y_true_binary_medium):,} ({100*np.mean(y_true_binary_medium):.2f}%)"
         )
         print(
-            f"  Negative (Class 1): {np.sum(y_true_binary_medium == 0):,} ({100*np.mean(y_true_binary_medium == 0):.2f}%)"
+            f"  Negative (Class 0 - Low): {np.sum(y_true_binary_medium == 0):,} ({100*np.mean(y_true_binary_medium == 0):.2f}%)"
         )
 
         metrics_medium = evaluate_binary_strategy(
-            y_true_binary_medium, y_probs_12, threshold, output_dir, "medium_vs_low"
+            y_true_binary_medium, y_probs_01, threshold, output_dir, "medium_vs_low"
         )
 
     # Combine all metrics
     metrics = {
         "ground_truth_encoding": {
-            "class_1": "Low landslide probability",
-            "class_2": "Medium landslide probability",
-            "class_3": "High landslide probability",
+            "detected": gt_encoding,
+            "normalised_to": "{0, 1, 2}",
+            "class_0": "Low landslide probability",
+            "class_1": "Medium landslide probability",
+            "class_2": "High landslide probability",
         },
         "ground_truth_distribution": {
             int(val): {"count": int(count), "fraction": float(count / len(y_true))}
             for val, count in zip(unique_gt, counts_gt)
         },
+        "multiclass_evaluation": multiclass_metrics,
         "ordinal_correlation": {
             "spearman_rho": float(corr),
             "p_value": float(pval),
@@ -616,9 +799,11 @@ def write_evaluation_report(
         f.write("## Ground Truth Encoding\n\n")
         if "ground_truth_encoding" in metrics:
             enc = metrics["ground_truth_encoding"]
-            f.write(f"- **Class 1:** {enc['class_1']}\n")
-            f.write(f"- **Class 2:** {enc['class_2']}\n")
-            f.write(f"- **Class 3:** {enc['class_3']}\n\n")
+            f.write(f"- **Detected encoding:** {enc.get('detected', 'unknown')}\n")
+            f.write(f"- **Normalised to:** {enc.get('normalised_to', '{0, 1, 2}')}\n")
+            f.write(f"- **Class 0:** {enc.get('class_0', 'Low')}\n")
+            f.write(f"- **Class 1:** {enc.get('class_1', 'Medium')}\n")
+            f.write(f"- **Class 2:** {enc.get('class_2', 'High')}\n\n")
 
         f.write("## Input Files\n\n")
         f.write(f"- **Susceptibility Map:** `{susceptibility_path}`\n")
@@ -638,21 +823,57 @@ def write_evaluation_report(
             f.write(f"- **Spearman's ρ:** {corr['spearman_rho']:.4f}\n")
             f.write(f"- **P-value:** {corr['p_value']:.4e}\n\n")
 
+        # Multi-class evaluation
+        if "multiclass_evaluation" in metrics and metrics["multiclass_evaluation"]:
+            mc = metrics["multiclass_evaluation"]
+            f.write("## Multi-Class Evaluation (3×3)\n\n")
+            f.write("### Confusion Matrix\n\n")
+            names = mc.get("class_names", ["Low", "Medium", "High"])
+            cm = mc.get("confusion_matrix", [])
+            if cm:
+                f.write("| | " + " | ".join(f"Pred {n}" for n in names) + " |\n")
+                f.write("|" + "---|" * (len(names) + 1) + "\n")
+                for i, name in enumerate(names):
+                    row = f"| **True {name}** | " + " | ".join(f"{cm[i][j]:,}" for j in range(len(names))) + " |\n"
+                    f.write(row)
+                f.write("\n")
+
+            f.write("### Per-Class Metrics\n\n")
+            f.write("| Class | Precision | Recall | F1 | IoU | Support |\n")
+            f.write("|---|---|---|---|---|---|\n")
+            for name in names:
+                pc = mc.get("per_class", {}).get(name, {})
+                f.write(f"| {name} | {pc.get('precision', 0):.4f} | {pc.get('recall', 0):.4f} | "
+                        f"{pc.get('f1', 0):.4f} | {pc.get('iou', 0):.4f} | {pc.get('support', 0):,} |\n")
+            f.write("\n")
+
+            f.write("### Aggregate Metrics\n\n")
+            f.write(f"- **Macro Precision:** {mc.get('macro_precision', 0):.4f}\n")
+            f.write(f"- **Macro Recall:** {mc.get('macro_recall', 0):.4f}\n")
+            f.write(f"- **Macro F1:** {mc.get('macro_f1', 0):.4f}\n")
+            f.write(f"- **Macro IoU:** {mc.get('macro_iou', 0):.4f}\n")
+            f.write(f"- **Accuracy:** {mc.get('accuracy', 0):.4f}\n")
+            f.write(f"- **Cohen's Kappa:** {mc.get('cohen_kappa', 0):.4f}\n")
+            f.write(f"- **Quadratic Weighted Kappa:** {mc.get('quadratic_weighted_kappa', 0):.4f} *(ordinal-aware)*\n\n")
+
+            if mc.get("predicted_class_breaks"):
+                f.write(f"*Predicted class breaks (percentile-matched):* {mc['predicted_class_breaks']}\n\n")
+
         # Strategy 1: High vs Rest
         if "strategy_1_high_vs_rest" in metrics:
-            f.write("## Strategy 1: High Risk (Class 3) vs Rest (Classes 1-2)\n\n")
+            f.write("## Strategy 1: High Risk (Class 2) vs Rest (Classes 0-1)\n\n")
             write_strategy_section(f, metrics["strategy_1_high_vs_rest"])
 
         # Strategy 2: Risk vs Low
         if "strategy_2_risk_vs_low" in metrics:
-            f.write("## Strategy 2: At-Risk (Classes 2-3) vs Low (Class 1)\n\n")
+            f.write("## Strategy 2: At-Risk (Classes 1-2) vs Low (Class 0)\n\n")
             write_strategy_section(f, metrics["strategy_2_risk_vs_low"])
 
         # Strategy 4: Medium vs Low (when Class 3 absent)
         if metrics.get("strategy_4_medium_vs_low"):
             f.write("## Strategy 4: Medium Risk (Class 2) vs Low Risk (Class 1)\n\n")
             f.write(
-                "*Note: This strategy evaluates only Classes 1 and 2, excluding Class 3 predictions.*\n\n"
+                "*Note: This strategy evaluates only Classes 0 and 1, excluding Class 2 predictions.*\n\n"
             )
             write_strategy_section(f, metrics["strategy_4_medium_vs_low"])
 

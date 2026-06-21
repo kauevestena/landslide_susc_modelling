@@ -202,7 +202,7 @@ def fill_nodata(array: np.ndarray, invalid_mask: np.ndarray) -> np.ndarray:
 
 
 def simple_sink_fill(array: np.ndarray, kernel_size: int) -> np.ndarray:
-    """Approximate sink filling via morphological closing."""
+    """Approximate sink filling via morphological closing (legacy fallback)."""
     if not kernel_size or kernel_size < 3:
         return array
     size = (kernel_size, kernel_size)
@@ -211,10 +211,68 @@ def simple_sink_fill(array: np.ndarray, kernel_size: int) -> np.ndarray:
     return eroded
 
 
-def d8_flow_accumulation(
+def _pysheds_flow_accumulation(
+    elevation: np.ndarray, valid_mask: np.ndarray
+) -> np.ndarray:
+    """
+    §11 fix: Compute D8 flow accumulation using pysheds (C-optimized backend).
+
+    Replaces the pure-Python per-pixel loop with pysheds' vectorized
+    implementation.  Also performs proper hydrological conditioning:
+    pit filling + flat resolution before flow routing.
+
+    Falls back to the legacy pure-Python implementation if pysheds
+    is not installed.
+    """
+    try:
+        from pysheds.grid import Grid
+        from pysheds.view import Raster, ViewFinder
+    except ImportError:
+        debug_print("WARNING: pysheds not installed, falling back to slow pure-Python D8")
+        debug_print("  Install with: pip install pysheds")
+        cellsize = 1.0  # will be multiplied by cell_area downstream
+        return _d8_flow_accumulation_legacy(elevation, valid_mask, cellsize)
+
+    debug_print("d8_flow_accumulation: using pysheds (optimized C backend)")
+    nrows, ncols = elevation.shape
+    debug_print(f"d8_flow_accumulation: grid size {nrows}x{ncols}")
+
+    # Prepare DEM with nodata for invalid pixels
+    nodata_val = -9999.0
+    dem = elevation.astype(np.float64).copy()
+    dem[~valid_mask] = nodata_val
+
+    viewfinder = ViewFinder(shape=dem.shape, mask=valid_mask, nodata=nodata_val)
+    dem_raster = Raster(dem, viewfinder=viewfinder)
+    grid = Grid(viewfinder=viewfinder)
+
+    # Hydrological conditioning: fill pits → resolve flats
+    debug_print("d8_flow_accumulation: filling pits (Planchon-Darboux)")
+    pit_filled = grid.fill_pits(dem_raster)
+    debug_print("d8_flow_accumulation: resolving flats")
+    inflated = grid.resolve_flats(pit_filled)
+
+    # Compute flow direction and accumulation
+    debug_print("d8_flow_accumulation: computing flow direction")
+    fdir = grid.flowdir(inflated)
+    debug_print("d8_flow_accumulation: computing flow accumulation")
+    acc = grid.accumulation(fdir)
+
+    # Convert to float32 array, zero out invalid pixels
+    flow = np.asarray(acc, dtype=np.float32)
+    flow[~valid_mask] = 0.0
+    debug_print(f"d8_flow_accumulation: done (max accumulation = {flow.max():.0f} cells)")
+    return flow
+
+
+def _d8_flow_accumulation_legacy(
     elevation: np.ndarray, valid_mask: np.ndarray, cellsize: float
 ) -> np.ndarray:
-    """Compute a simple D8-style flow accumulation grid respecting nodata."""
+    """Legacy pure-Python D8 flow accumulation (SLOW — O(n) Python loop).
+
+    Kept as fallback when pysheds is not installed.
+    For large rasters (>1M pixels), prefer _pysheds_flow_accumulation().
+    """
     debug_print("d8_flow_accumulation: computing flow accumulation grid")
     nrows, ncols = elevation.shape
     debug_print(f"d8_flow_accumulation: grid size {nrows}x{ncols}")
@@ -312,9 +370,7 @@ def compute_dem_features(
     debug_print("compute_dem_features: calculated TPI and TRI")
 
     cell_area = cellsize_x * cellsize_y
-    flow = d8_flow_accumulation(
-        elevation, valid_mask, cellsize=(cellsize_x + cellsize_y) * 0.5
-    )
+    flow = _pysheds_flow_accumulation(elevation, valid_mask)
     flow_area = flow * cell_area
     debug_print("compute_dem_features: computed flow accumulation and area")
     log_flow = np.log1p(flow_area)

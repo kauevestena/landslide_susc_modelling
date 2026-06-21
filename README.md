@@ -1,101 +1,66 @@
 # landslide_susc_modelling
-Transforming Drone Direct Products into Landslide Susceptibility Index Raster
 
-## Overview
-An end-to-end deep learning pipeline for landslide susceptibility mapping from drone-derived orthophotos and Digital Terrain Models (DTMs). The pipeline includes preprocessing, feature engineering, model training, and inference with uncertainty quantification.
+Drone-derived landslide susceptibility modelling pipeline. The project builds terrain, orthophoto, and land-cover feature stacks; trains a 3-class ordinal segmentation model; and exports georeferenced susceptibility, class, and uncertainty rasters.
 
-## Key Features
-- **Multi-source feature engineering**: DTM-derived terrain features + orthophoto-derived land cover
-- **Resumable pipeline**: Automatically detects existing artifacts and resumes from the last checkpoint
-- **Spatial block cross-validation**: Prevents spatial leakage in train/val/test splits
-- **Probability calibration**: Isotonic regression for reliable probability estimates
-- **Uncertainty quantification**: Monte Carlo dropout for epistemic uncertainty
-- **Production-ready outputs**: Georeferenced GeoTIFF exports with model card
+The current source of truth is the implementation plus `config.yaml`. Older historical Markdown files have been removed because they mixed past experiments, proposed fixes, and stale operating instructions.
 
 ## Quick Start
 
-### Prerequisites
-**REQUIRED**: Python virtual environment (`.venv`)
-
-See **[VENV_SETUP.md](VENV_SETUP.md)** for detailed instructions.
+Always use the repository virtual environment directly:
 
 ```bash
-# Create and activate virtual environment
-python3 -m venv .venv
-source .venv/bin/activate  # Linux/macOS
-# OR: .venv\Scripts\activate  # Windows
+.venv/bin/python -m src.main_pipeline
 ```
 
-### Installation
+To rebuild all preprocessing, tiles, model artifacts, and outputs from scratch:
+
 ```bash
-# With venv activated:
-pip install -r requirements.txt
+.venv/bin/python -m src.main_pipeline --force_recreate
 ```
 
-### Usage
+Install or refresh dependencies with:
+
 ```bash
-# With venv activated:
-# Run the full pipeline (resumes from last checkpoint)
-python -m src.main_pipeline
-
-# Force recreation of all artifacts
-python -m src.main_pipeline --force_recreate
+.venv/bin/pip install -r requirements.txt
 ```
 
-### Configuration
-Edit `config.yaml` to customize:
-- Input/output directories
-- Preprocessing parameters (DTM hygiene, feature toggles)
-- Dataset tiling and sampling strategy
-- Model architecture and training hyperparameters
-- Inference settings (window size, TTA, MC dropout)
+Do not use system `python`, `python3`, or `pip` for this repository.
 
-Edit `inputs.py` to specify paths to your DTM, orthophoto, and ground truth rasters.
+## Main Files
 
-## Pipeline Stages
+- `config.yaml` controls directories, preprocessing, tiling, model, training, and inference settings.
+- `inputs.py` defines the absolute local raster paths for the train and test areas.
+- `src/main_pipeline.py` is the active end-to-end entrypoint.
+- `src/train.py` contains dataset loading, losses, training, metrics, and calibration.
+- `src/inference.py` writes final GeoTIFF deliverables.
+- `src/evaluate.py` can evaluate or summarize generated outputs after inference.
+- `updated_full_guide.md` is the detailed current guide.
 
-1. **Preprocessing** (`process_area`)
-   - DTM hygiene (sink filling, smoothing)
-   - Terrain feature derivation (slope, aspect, curvatures, flow accumulation, TWI, SPI, STI)
-   - Orthophoto normalization and land cover clustering
-   - Feature stack assembly and normalization
+## Current Pipeline
 
-2. **Dataset Preparation** (`prepare_dataset`)
-   - Spatial block splitting (train/val/test)
-   - Tile extraction with configurable overlap
-   - Class-balanced sampling with hard-negative mining
+With the current config, the pipeline:
 
-3. **Model Training** (`train_model`)
-   - U-Net with ResNet encoder
-   - Dice + Cross-Entropy loss with class weights
-   - Isotonic calibration on validation set
+1. Preprocesses train and test DTMs/orthophotos to the DTM grid.
+2. Builds a 28-channel feature stack from terrain derivatives, normalized orthophoto bands, and ESA WorldCover one-hot LULC channels.
+3. Remaps ground truth to model classes: `0=low`, `1=medium`, `2=high`, `255=ignore`.
+4. Uses mixed-domain tiling from both train and test areas.
+5. Trains an EfficientNet-B4 U-Net with spatial attention, soft labels, focal/dice loss, and CORAL ordinal loss.
+6. Exports calibrated test-area outputs under `outputs/`.
 
-4. **Inference** (`run_inference`)
-   - Sliding-window prediction with Gaussian blending
-   - Optional test-time augmentation (TTA)
-   - Monte Carlo dropout for uncertainty estimation
-   - GeoTIFF export: susceptibility, uncertainty, valid mask
+## Current Outputs
 
-## Output Files
-- `outputs/<area>_landslide_susceptibility.tif` - Calibrated probability map [0-1]
-- `outputs/<area>_uncertainty.tif` - Epistemic uncertainty estimate
-- `outputs/<area>_valid_mask.tif` - Valid pixel mask
-- `outputs/model_card.md` - Model documentation and performance metrics
-- `artifacts/experiments/best_model.pth` - Trained model checkpoint
-- `artifacts/experiments/training_metrics.json` - Training history
+The active inference output names are:
 
-## Documentation
-- `descriptive_script.md` - Detailed methodology and design decisions
-- `AGENTS.md` - Guide for autonomous and human collaborators
+- `outputs/test_susceptibility.tif`
+- `outputs/test_susceptibility_high.tif`
+- `outputs/test_class_probabilities.tif`
+- `outputs/test_class_map.tif`
+- `outputs/test_uncertainty.tif`
+- `outputs/test_valid_mask.tif`
+- `outputs/model_card.md`
 
-## Implementation Notes
+Generated rasters, tiles, model checkpoints, reports, and logs are runtime artifacts. They are not source documentation and should not be committed.
 
-### Alternative Algorithms
-The implementation uses practical alternatives for computational efficiency:
-- **Slope calculation**: Gradient-based approximation (alternative to least-squares fitted plane)
-- **Flow accumulation**: D8 single flow direction (alternative to Multiple Flow Direction - Freeman 1991)
+## More Detail
 
-These alternatives provide good approximations while maintaining reasonable computational performance for large rasters.
-
-## License
-See LICENSE file for details.
+Read `updated_full_guide.md` for the full project orientation, current artifact snapshot, known risks, and validation commands.
