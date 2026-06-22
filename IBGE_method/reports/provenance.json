@@ -1,0 +1,281 @@
+{
+  "augmentation_policy": "Training augmentation/SMOTE is allowed; fabricated source layers are not.",
+  "drone_inputs": {
+    "dtm": "/home/kaue/data/landslide/feb26/DTM_4_GNSS-AAT_16cm.tif",
+    "orthophoto": "/home/kaue/data/landslide/feb26/Ortho_4_GNSS-AAT_16cm.tif"
+  },
+  "ground_truth_25m": "/home/kaue/data/landslide/test/Ground_truth_test.tif",
+  "land_use": {
+    "source": "MapBiomas 10m collection 2 integration 2023",
+    "url": "https://storage.googleapis.com/mapbiomas-public/initiatives/brasil/lulc_10m/collection_2/integration/mapbiomas_10m_collection2_integration_v1-classification_2023.tif"
+  },
+  "municipal_sig_root": "/home/kaue/Downloads/05_Geospatial_Data_Maps/sig_cachoeirodoitapemirim_es_suscet",
+  "no_synthetic_source_data": true,
+  "official_references": {
+    "ibge_pedology_complement": "https://biblioteca.ibge.gov.br/index.php/biblioteca-catalogo?id=2102076&view=detalhes",
+    "ibge_susceptibility": "https://biblioteca.ibge.gov.br/index.php/biblioteca-catalogo?id=2101684&view=detalhes",
+    "mapbiomas_10m": "https://brasil.mapbiomas.org/mapbiomas-cobertura-10m/",
+    "sgb_cachoeiro_package": "https://rigeo.sgb.gov.br/handle/doc/14892",
+    "sgb_technical_note": "https://rigeo.sgb.gov.br/handle/doc/16588"
+  },
+  "reference_grid": {
+    "area_km2": 2.6494183936002167,
+    "bounds": [
+      270100.8815011497,
+      7709029.145493787,
+      271009.36150114966,
+      7711945.465493787
+    ],
+    "crs": "EPSG:31984",
+    "height": 18227,
+    "path": "/home/kaue/data/landslide/feb26/DTM_4_GNSS-AAT_16cm.tif",
+    "resolution": [
+      0.15999999999999673,
+      0.16000000000001635
+    ],
+    "width": 5678
+  },
+  "source_layers": {
+    "features_point": "/home/kaue/Downloads/05_Geospatial_Data_Maps/sig_cachoeirodoitapemirim_es_suscet/data_interest_area/05.Fei\u00e7\u00f5es/feicoes_pontuais.shp",
+    "features_poly": "/home/kaue/Downloads/05_Geospatial_Data_Maps/sig_cachoeirodoitapemirim_es_suscet/data_interest_area/05.Fei\u00e7\u00f5es/feicoes.shp",
+    "geology": "/home/kaue/Downloads/05_Geospatial_Data_Maps/sig_cachoeirodoitapemirim_es_suscet/data_interest_area/06.Geologia/Geologia.shp",
+    "lineaments": "/home/kaue/Downloads/05_Geospatial_Data_Maps/sig_cachoeirodoitapemirim_es_suscet/data_interest_area/06.Geologia/Lineamentos.shp",
+    "pedology": "/home/kaue/Downloads/05_Geospatial_Data_Maps/sig_cachoeirodoitapemirim_es_suscet/data_interest_area/07.Pedologia/Pedologia.shp",
+    "rain_pma2": "/home/kaue/Downloads/05_Geospatial_Data_Maps/sig_cachoeirodoitapemirim_es_suscet/data_interest_area/08.Isoietas/AtlasPluviometrico/IsoietasAnuaisMedias/pma2",
+    "relief": "/home/kaue/Downloads/05_Geospatial_Data_Maps/sig_cachoeirodoitapemirim_es_suscet/data_interest_area/04.Padr\u00f5esDeRelevo/Relevo.shp",
+    "sgb_mass": "/home/kaue/Downloads/05_Geospatial_Data_Maps/sig_cachoeirodoitapemirim_es_suscet/data_interest_area/12.Suscetibilidade/SuscetibilidadeMovimentoDeMassa.shp"
+  },
+  "validation": {
+    "methods": {
+      "dl": {
+        "against_ground_truth_25m": {
+          "labels_order": [
+            1,
+            2,
+            3
+          ],
+          "overall_accuracy": 0.8999669582197491,
+          "pixels_compared": 44570843,
+          "rows_reference_columns_prediction": [
+            [
+              36501024,
+              4301165,
+              855
+            ],
+            [
+              156537,
+              3611262,
+              0
+            ],
+            [
+              0,
+              0,
+              0
+            ]
+          ]
+        },
+        "against_official_sgb": {
+          "labels_order": [
+            1,
+            2,
+            3
+          ],
+          "overall_accuracy": 0.8894133323886201,
+          "pixels_compared": 44570843,
+          "rows_reference_columns_prediction": [
+            [
+              36191637,
+              4462162,
+              855
+            ],
+            [
+              465924,
+              3450265,
+              0
+            ],
+            [
+              0,
+              0,
+              0
+            ]
+          ]
+        },
+        "class_distribution": {
+          "classes": {
+            "1": {
+              "area_m2": 938433.5616000767,
+              "fraction": 0.8224560841265668,
+              "pixels": 36657561
+            },
+            "2": {
+              "area_m2": 202558.13120001656,
+              "fraction": 0.17752473292910345,
+              "pixels": 7912427
+            },
+            "3": {
+              "area_m2": 21.88800000000179,
+              "fraction": 1.918294432977182e-05,
+              "pixels": 855
+            }
+          },
+          "total_valid_area_m2": 1141013.5808000932
+        },
+        "prediction": "DL_method/outputs/dl_class_map_3class.tif"
+      },
+      "ibge": {
+        "against_ground_truth_25m": {
+          "labels_order": [
+            1,
+            2,
+            3
+          ],
+          "overall_accuracy": 0.02468849535755864,
+          "pixels_compared": 41966389,
+          "rows_reference_columns_prediction": [
+            [
+              1036087,
+              4277860,
+              33045414
+            ],
+            [
+              0,
+              0,
+              3607028
+            ],
+            [
+              0,
+              0,
+              0
+            ]
+          ]
+        },
+        "against_official_sgb": {
+          "labels_order": [
+            1,
+            2,
+            3
+          ],
+          "overall_accuracy": 0.02468849535755864,
+          "pixels_compared": 41966389,
+          "rows_reference_columns_prediction": [
+            [
+              1036087,
+              4277860,
+              32909904
+            ],
+            [
+              0,
+              0,
+              3742538
+            ],
+            [
+              0,
+              0,
+              0
+            ]
+          ]
+        },
+        "class_distribution": {
+          "classes": {
+            "1": {
+              "area_m2": 26523.827200002168,
+              "fraction": 0.02468849535755864,
+              "pixels": 1036087
+            },
+            "2": {
+              "area_m2": 109513.21600000895,
+              "fraction": 0.10193538452879518,
+              "pixels": 4277860
+            },
+            "3": {
+              "area_m2": 938302.5152000767,
+              "fraction": 0.8733761201136463,
+              "pixels": 36652442
+            }
+          },
+          "total_valid_area_m2": 1074339.5584000878
+        },
+        "prediction": "IBGE_method/outputs/ibge_class_map_3class.tif"
+      },
+      "sgb": {
+        "against_ground_truth_25m": {
+          "labels_order": [
+            1,
+            2,
+            3
+          ],
+          "overall_accuracy": 0.5015103347148738,
+          "pixels_compared": 44338185,
+          "rows_reference_columns_prediction": [
+            [
+              18604095,
+              21842598,
+              122223
+            ],
+            [
+              137306,
+              3631963,
+              0
+            ],
+            [
+              0,
+              0,
+              0
+            ]
+          ]
+        },
+        "against_official_sgb": {
+          "labels_order": [
+            1,
+            2,
+            3
+          ],
+          "overall_accuracy": 0.5045147202123857,
+          "pixels_compared": 44338185,
+          "rows_reference_columns_prediction": [
+            [
+              18595357,
+              21700651,
+              122223
+            ],
+            [
+              146044,
+              3773910,
+              0
+            ],
+            [
+              0,
+              0,
+              0
+            ]
+          ]
+        },
+        "class_distribution": {
+          "classes": {
+            "1": {
+              "area_m2": 479779.86560003925,
+              "fraction": 0.42269211064909407,
+              "pixels": 18741401
+            },
+            "2": {
+              "area_m2": 652148.7616000533,
+              "fraction": 0.5745512812488829,
+              "pixels": 25474561
+            },
+            "3": {
+              "area_m2": 3128.9088000002557,
+              "fraction": 0.0027566081020231207,
+              "pixels": 122223
+            }
+          },
+          "total_valid_area_m2": 1135057.5360000927
+        },
+        "prediction": "SGB_method/outputs/sgb_class_map.tif"
+      }
+    },
+    "reference_outputs": {
+      "ground_truth_25m": "SGB_method/outputs/reference_ground_truth_25m_class_map.tif",
+      "official_sgb": "SGB_method/outputs/reference_official_sgb_class_map.tif"
+    }
+  }
+}

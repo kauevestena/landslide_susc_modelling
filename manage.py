@@ -398,6 +398,13 @@ def run_pipeline(args: argparse.Namespace) -> int:
     return subprocess.call(cmd, cwd=ROOT)
 
 
+def run_three_methods(args: argparse.Namespace) -> int:
+    from src.three_method_comparison import run
+
+    run(force=args.force)
+    return 0
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description=__doc__)
     subparsers = parser.add_subparsers(dest="command", required=True)
@@ -448,6 +455,17 @@ def build_parser() -> argparse.ArgumentParser:
         dest="force_recreate",
     )
     pipeline_parser.set_defaults(func=run_pipeline)
+
+    methods_parser = subparsers.add_parser(
+        "three-methods",
+        help="Generate DL, IBGE-adapted, and SGB-style outputs on the drone bbox",
+    )
+    methods_parser.add_argument(
+        "--force",
+        action="store_true",
+        help="Regenerate outputs even when previous reports exist",
+    )
+    methods_parser.set_defaults(func=run_three_methods)
 
     return parser
 

@@ -1,0 +1,31 @@
+{
+  "class_distribution": {
+    "classes": {
+      "1": {
+        "area_m2": 479779.86560003925,
+        "fraction": 0.42269211064909407,
+        "pixels": 18741401
+      },
+      "2": {
+        "area_m2": 652148.7616000533,
+        "fraction": 0.5745512812488829,
+        "pixels": 25474561
+      },
+      "3": {
+        "area_m2": 3128.9088000002557,
+        "fraction": 0.0027566081020231207,
+        "pixels": 122223
+      }
+    },
+    "total_valid_area_m2": 1135057.5360000927
+  },
+  "lineaments_in_bbox": 9,
+  "outputs": [
+    "SGB_method/outputs/reference_ground_truth_25m_class_map.tif",
+    "SGB_method/outputs/reference_official_sgb_class_map.tif",
+    "SGB_method/outputs/sgb_class_map.tif",
+    "SGB_method/outputs/sgb_susceptibility_score.tif",
+    "SGB_method/outputs/sgb_valid_mask.tif"
+  ],
+  "valid_fraction": 0.4284176250689105
+}

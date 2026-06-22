@@ -1,0 +1,32 @@
+{
+  "class_distribution": {
+    "classes": {
+      "1": {
+        "area_m2": 938433.5616000767,
+        "fraction": 0.8224560841265668,
+        "pixels": 36657561
+      },
+      "2": {
+        "area_m2": 202558.13120001656,
+        "fraction": 0.17752473292910345,
+        "pixels": 7912427
+      },
+      "3": {
+        "area_m2": 21.88800000000179,
+        "fraction": 1.918294432977182e-05,
+        "pixels": 855
+      }
+    },
+    "total_valid_area_m2": 1141013.5808000932
+  },
+  "outputs": [
+    "DL_method/outputs/dl_class_map_3class.tif",
+    "DL_method/outputs/dl_class_map_model_encoding.tif",
+    "DL_method/outputs/dl_class_probabilities.tif",
+    "DL_method/outputs/dl_susceptibility.tif",
+    "DL_method/outputs/dl_susceptibility_high.tif",
+    "DL_method/outputs/dl_uncertainty.tif",
+    "DL_method/outputs/dl_valid_mask.tif"
+  ],
+  "valid_fraction": 0.430665682534801
+}

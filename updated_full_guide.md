@@ -39,6 +39,14 @@ Use this to force a full rebuild:
 
 Always use `.venv/bin/python` and `.venv/bin/pip`; do not use system Python.
 
+The separate three-method comparison command is:
+
+```bash
+.venv/bin/python manage.py three-methods --force
+```
+
+It generates DL, IBGE-adapted, and SGB-style susceptibility products on the same feb26 16 cm drone DTM footprint.
+
 ## 2. Repository Map
 
 Maintained source files:
@@ -52,6 +60,7 @@ Maintained source files:
 - `src/train.py`: PyTorch datasets, model wrapper, losses, metrics, training loop, calibration, plots.
 - `src/inference.py`: sliding-window prediction, blending, TTA, CRF, calibration, uncertainty, output export, model card.
 - `src/evaluate.py`: standalone analysis/evaluation of generated outputs.
+- `src/three_method_comparison.py`: local three-method comparison workflow for the feb26 drone footprint.
 - `src/metrics.py`: threshold selection helpers.
 - `src/visualize.py`: ROC, PR, calibration, and training-history plots.
 - `src/soft_labels.py`: ordinal and gaussian soft-label generation.
@@ -68,6 +77,7 @@ Generated artifacts:
 
 - `artifacts/`: derived rasters, merged stacks, tiles, model checkpoints, calibrators, metrics, figures.
 - `outputs/`: final GeoTIFFs, model card, generated evaluation reports.
+- `DL_method/`, `IBGE_method/`, `SGB_method/`: generated comparison outputs, configs, provenance, and reports for the three-method run.
 
 Generated artifacts are useful evidence but not source documentation.
 
@@ -153,7 +163,7 @@ The mixed-domain path:
 
 1. Loads train and test feature stacks, aligned labels, and masks.
 2. Checks CRS and resolution match.
-3. Vertically concatenates train and test arrays into a synthetic merged raster.
+3. Vertically concatenates train and test arrays into a composite merged raster.
 4. Pads width with zeros if needed.
 5. Generates candidate tile positions using `tile_size=256` and `stride=128`.
 6. Splits candidate tiles spatially by blocks within each source area.
@@ -357,12 +367,15 @@ Resolved in current source:
 - Historical tracked training logs were removed from source.
 - `pydensecrf` setup is asserted when CRF is enabled; missing CRF support is a hard setup error.
 - Dynamic World and `force_download` config keys now sit under `preprocessing.external_lulc`.
+- `manage.py three-methods` creates the three local susceptibility-method outputs on the same drone reference grid without fabricating source layers.
 
 Remaining cautions:
 
 - Existing generated artifacts may be older than the current schema and will be regenerated when the pipeline reaches those stages.
 - CUDA is disabled in current config. The code has a runtime CUDA test, but CPU is the expected path while `use_cuda: false`.
 - Full retraining/inference is expensive and was not part of the sharp-edge cleanup.
+- The IBGE comparison output is a high-resolution local adaptation, not the strict national 1 km IBGE statistical-grid product.
+- The SGB-style output is deterministic because no landslide-scar polygon inventory intersects the drone bbox for formal ISD calibration.
 
 ## 8. Safe Operating Procedures
 
@@ -385,6 +398,20 @@ For a clean rebuild:
 ```bash
 .venv/bin/python manage.py pipeline --force_recreate
 ```
+
+For the three-method comparison on the feb26 16 cm drone footprint:
+
+```bash
+.venv/bin/python manage.py three-methods --force
+```
+
+This writes:
+
+- `DL_method/outputs/`: existing DL inference products reprojected to the exact drone DTM grid.
+- `IBGE_method/outputs/`: IBGE-adapted weighted score, 5-class map, 3-class collapsed map, valid mask, and MapBiomas 10 m land-use layer on the drone grid.
+- `SGB_method/outputs/`: SGB-style deterministic score/class map plus clipped real reference maps from official SGB and the 25 m ground truth.
+
+The deterministic methods use real source data only. Training augmentation and SMOTE are allowed modelling augmentation, but dummy source rasters, invented scars, and fake field observations are not allowed.
 
 Use `--force_recreate` after changing:
 

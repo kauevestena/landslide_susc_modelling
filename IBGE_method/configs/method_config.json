@@ -1,0 +1,71 @@
+{
+  "classification_breaks_1_to_10": [
+    0,
+    3.5,
+    4.5,
+    5.5,
+    6.5,
+    10
+  ],
+  "land_use_source": "https://storage.googleapis.com/mapbiomas-public/initiatives/brasil/lulc_10m/collection_2/integration/mapbiomas_10m_collection2_integration_v1-classification_2023.tif",
+  "method": "High-resolution local adaptation of IBGE weighted susceptibility",
+  "note": "This is not the strict national IBGE 1 km statistical-grid product; it applies the IBGE thematic scoring logic on the drone footprint. Slope is derived from the real drone DTM on a 10 m analysis grid to avoid centimeter-scale surface roughness dominating the IBGE weights.",
+  "reference_grid": {
+    "area_km2": 2.6494183936002167,
+    "bounds": [
+      270100.8815011497,
+      7709029.145493787,
+      271009.36150114966,
+      7711945.465493787
+    ],
+    "crs": "EPSG:31984",
+    "height": 18227,
+    "path": "/home/kaue/data/landslide/feb26/DTM_4_GNSS-AAT_16cm.tif",
+    "resolution": [
+      0.15999999999999673,
+      0.16000000000001635
+    ],
+    "width": 5678
+  },
+  "slope_classes_percent_to_note": [
+    [
+      0,
+      3,
+      1
+    ],
+    [
+      3,
+      8,
+      3
+    ],
+    [
+      8,
+      20,
+      5
+    ],
+    [
+      20,
+      45,
+      8
+    ],
+    [
+      45,
+      75,
+      9
+    ],
+    [
+      75,
+      null,
+      10
+    ]
+  ],
+  "terrain_analysis_resolution_m": 10.0,
+  "weights": {
+    "geology": 0.15,
+    "geomorphology": 0.2,
+    "land_use": 0.1,
+    "pedology": 0.15,
+    "pluviosity": 0.05,
+    "slope": 0.35
+  }
+}

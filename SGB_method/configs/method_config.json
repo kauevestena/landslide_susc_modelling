@@ -1,0 +1,36 @@
+{
+  "class_breaks": {
+    "low_max": 0.45,
+    "medium_max": 0.68
+  },
+  "coarse_factor_resolution_m": 5.0,
+  "method": "Deterministic SGB-style reconstruction on the drone DTM bbox",
+  "note": "This is a deterministic reconstruction because no landslide-scar polygon inventory intersects the drone bbox for formal ISD calibration. Terrain factors are derived from the real drone DTM on a 5 m analysis grid.",
+  "reference_grid": {
+    "area_km2": 2.6494183936002167,
+    "bounds": [
+      270100.8815011497,
+      7709029.145493787,
+      271009.36150114966,
+      7711945.465493787
+    ],
+    "crs": "EPSG:31984",
+    "height": 18227,
+    "path": "/home/kaue/data/landslide/feb26/DTM_4_GNSS-AAT_16cm.tif",
+    "resolution": [
+      0.15999999999999673,
+      0.16000000000001635
+    ],
+    "width": 5678
+  },
+  "slope_analysis_resolution_m": 5.0,
+  "weights": {
+    "curvature": 0.12,
+    "drainage": 0.1,
+    "geology": 0.08,
+    "lineament_density": 0.16,
+    "pedology": 0.07,
+    "relief": 0.13,
+    "slope": 0.34
+  }
+}

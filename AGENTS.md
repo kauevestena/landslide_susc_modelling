@@ -20,6 +20,7 @@ This file is the operational guide for autonomous and human collaborators workin
 .venv/bin/python manage.py check-crf
 .venv/bin/python manage.py pipeline
 .venv/bin/python manage.py pipeline --force_recreate
+.venv/bin/python manage.py three-methods --force
 .venv/bin/python -m src.evaluate --analysis_only
 ```
 
@@ -35,6 +36,8 @@ The current pipeline stages are:
 3. `train_model()` trains the segmentation model, writes `best_model.pth`, metrics, plots, threshold selection, isotonic calibrator, optional ordinal calibrator, and temperature scaling metadata.
 4. `run_inference()` loads the test area, predicts class probabilities by sliding window, applies smoothing/calibration/CRF when enabled, and writes final GeoTIFF outputs plus `outputs/model_card.md`.
 
+`manage.py three-methods` is a separate comparison workflow. It aligns the existing DL outputs plus IBGE-adapted and SGB-style deterministic products to the feb26 16 cm drone DTM footprint, writing generated artifacts under `DL_method/`, `IBGE_method/`, and `SGB_method/`.
+
 ## Current Model and Data Contract
 
 - Input registry: `inputs.py`.
@@ -48,6 +51,7 @@ The current pipeline stages are:
 
 - Keep edits targeted. Do not rewrite pipeline modules unless the task requires it.
 - Do not delete or regenerate `artifacts/`, `outputs/`, or `.venv/` unless explicitly requested.
+- Do not treat generated files under `DL_method/outputs/`, `IBGE_method/outputs/`, or `SGB_method/outputs/` as source files.
 - Use `--force_recreate` when changing preprocessing, LULC, tiling, label smoothing, channel count, or model architecture.
 - Before changing behavior, read the relevant implementation first. Generated artifacts may reflect older runs.
 - Large rasters are expensive; prefer metadata checks and targeted validation before launching full retraining.

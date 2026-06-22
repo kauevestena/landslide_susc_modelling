@@ -1,0 +1,130 @@
+{
+  "channel_names": [
+    "dtm_elevation",
+    "slope_deg",
+    "aspect_sin",
+    "aspect_cos",
+    "general_curvature",
+    "plan_curvature",
+    "profile_curvature",
+    "tpi",
+    "tri",
+    "log_flow_accumulation",
+    "twi",
+    "spi",
+    "sti",
+    "log_distance_to_drainage",
+    "ortho_norm_band_1",
+    "ortho_norm_band_2",
+    "ortho_norm_band_3",
+    "lulc_class_0",
+    "lulc_class_1",
+    "lulc_class_2",
+    "lulc_class_3",
+    "lulc_class_4",
+    "lulc_class_5",
+    "lulc_class_6",
+    "lulc_class_7",
+    "lulc_class_8",
+    "lulc_class_9",
+    "lulc_class_10"
+  ],
+  "channel_map": {
+    "dtm_elevation": 0,
+    "slope_deg": 1,
+    "aspect_sin": 2,
+    "aspect_cos": 3,
+    "general_curvature": 4,
+    "plan_curvature": 5,
+    "profile_curvature": 6,
+    "tpi": 7,
+    "tri": 8,
+    "log_flow_accumulation": 9,
+    "twi": 10,
+    "spi": 11,
+    "sti": 12,
+    "log_distance_to_drainage": 13,
+    "ortho_norm_band_1": 14,
+    "ortho_norm_band_2": 15,
+    "ortho_norm_band_3": 16,
+    "lulc_class_0": 17,
+    "lulc_class_1": 18,
+    "lulc_class_2": 19,
+    "lulc_class_3": 20,
+    "lulc_class_4": 21,
+    "lulc_class_5": 22,
+    "lulc_class_6": 23,
+    "lulc_class_7": 24,
+    "lulc_class_8": 25,
+    "lulc_class_9": 26,
+    "lulc_class_10": 27
+  },
+  "land_cover_clusters": 11,
+  "lulc_source": "worldcover",
+  "lulc_class_info": {
+    "lulc_class_0": {
+      "worldcover_code": 10,
+      "name": "tree_cover",
+      "channel_index": 0
+    },
+    "lulc_class_1": {
+      "worldcover_code": 20,
+      "name": "shrubland",
+      "channel_index": 1
+    },
+    "lulc_class_2": {
+      "worldcover_code": 30,
+      "name": "grassland",
+      "channel_index": 2
+    },
+    "lulc_class_3": {
+      "worldcover_code": 40,
+      "name": "cropland",
+      "channel_index": 3
+    },
+    "lulc_class_4": {
+      "worldcover_code": 50,
+      "name": "built_up",
+      "channel_index": 4
+    },
+    "lulc_class_5": {
+      "worldcover_code": 60,
+      "name": "bare_sparse_veg",
+      "channel_index": 5
+    },
+    "lulc_class_6": {
+      "worldcover_code": 70,
+      "name": "snow_ice",
+      "channel_index": 6
+    },
+    "lulc_class_7": {
+      "worldcover_code": 80,
+      "name": "water",
+      "channel_index": 7
+    },
+    "lulc_class_8": {
+      "worldcover_code": 90,
+      "name": "herbaceous_wetland",
+      "channel_index": 8
+    },
+    "lulc_class_9": {
+      "worldcover_code": 95,
+      "name": "mangroves",
+      "channel_index": 9
+    },
+    "lulc_class_10": {
+      "worldcover_code": 100,
+      "name": "moss_lichen",
+      "channel_index": 10
+    }
+  },
+  "source_files": {
+    "dtm": "/home/kaue/data/landslide/test/DTM_4_GNSS-AAT.tif",
+    "ortho": "/home/kaue/data/landslide/test/Ortho_test.tif",
+    "ground_truth": "/home/kaue/data/landslide/test/Ground_truth_test.tif"
+  },
+  "auxiliary_layers": {
+    "slope_deg": "artifacts/derived/test/slope_deg.tif",
+    "land_cover": "artifacts/derived/test/land_cover.tif"
+  }
+}

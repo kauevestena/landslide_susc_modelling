@@ -32,6 +32,12 @@ Before running inference with the current config, CRF setup must pass:
 .venv/bin/python manage.py check-crf
 ```
 
+To generate the three-method comparison on the feb26 16 cm drone footprint:
+
+```bash
+.venv/bin/python manage.py three-methods --force
+```
+
 ## Main Files
 
 - `config.yaml` controls directories, preprocessing, tiling, model, training, and inference settings.
@@ -41,6 +47,7 @@ Before running inference with the current config, CRF setup must pass:
 - `src/train.py` contains dataset loading, losses, training, metrics, and calibration.
 - `src/inference.py` writes final GeoTIFF deliverables.
 - `src/evaluate.py` can evaluate or summarize generated outputs after inference.
+- `src/three_method_comparison.py` generates the DL, IBGE-adapted, and SGB-style comparison outputs.
 - `updated_full_guide.md` is the detailed current guide.
 
 ## Current Pipeline
@@ -67,6 +74,16 @@ The active inference output names are:
 - `outputs/model_card.md`
 
 Generated rasters, tiles, model checkpoints, reports, and logs are runtime artifacts. They are not source documentation and should not be committed.
+
+## Three-Method Comparison
+
+`manage.py three-methods` writes method-specific outputs and provenance under:
+
+- `DL_method/`
+- `IBGE_method/`
+- `SGB_method/`
+
+All three methods are aligned to the feb26 drone DTM grid. Generated GeoTIFFs under each `outputs/` subfolder are ignored by git.
 
 ## Validation
 

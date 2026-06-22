@@ -215,6 +215,9 @@ splits/
 experiments/
 outputs/
 artifacts/
+DL_method/outputs/
+IBGE_method/outputs/
+SGB_method/outputs/
 
 # IDE
 .vscode/

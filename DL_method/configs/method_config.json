@@ -1,0 +1,29 @@
+{
+  "method": "Existing deep-learning inference products reprojected to the exact drone DTM grid",
+  "note": "This packages the existing DL inference products on the drone footprint. No retraining was run in this step; augmentation and SMOTE remain training-time choices.",
+  "reference_grid": {
+    "area_km2": 2.6494183936002167,
+    "bounds": [
+      270100.8815011497,
+      7709029.145493787,
+      271009.36150114966,
+      7711945.465493787
+    ],
+    "crs": "EPSG:31984",
+    "height": 18227,
+    "path": "/home/kaue/data/landslide/feb26/DTM_4_GNSS-AAT_16cm.tif",
+    "resolution": [
+      0.15999999999999673,
+      0.16000000000001635
+    ],
+    "width": 5678
+  },
+  "source_outputs": {
+    "class_map": "/home/kaue/landslide_susc_modelling/outputs/test_class_map.tif",
+    "class_probabilities": "/home/kaue/landslide_susc_modelling/outputs/test_class_probabilities.tif",
+    "susceptibility": "/home/kaue/landslide_susc_modelling/outputs/test_susceptibility.tif",
+    "susceptibility_high": "/home/kaue/landslide_susc_modelling/outputs/test_susceptibility_high.tif",
+    "uncertainty": "/home/kaue/landslide_susc_modelling/outputs/test_uncertainty.tif",
+    "valid_mask": "/home/kaue/landslide_susc_modelling/outputs/test_valid_mask.tif"
+  }
+}
