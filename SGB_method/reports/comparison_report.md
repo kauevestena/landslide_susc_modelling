@@ -8,7 +8,7 @@ Reference layers are real data clipped/reprojected to the drone grid.
 
 ## Overall accuracy against references
 - dl: SGB=0.8894, GT25m=0.9000
-- ibge: SGB=0.0247, GT25m=0.0247
+- ibge: SGB=0.0686, GT25m=0.0686
 - sgb: SGB=0.5045, GT25m=0.5015
 
 See `validation.json` for confusion matrices and class areas.

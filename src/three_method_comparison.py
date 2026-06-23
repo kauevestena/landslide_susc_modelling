@@ -37,6 +37,7 @@ MAPBIOMAS_10M_2023_URL = (
     "lulc_10m/collection_2/integration/"
     "mapbiomas_10m_collection2_integration_v1-classification_2023.tif"
 )
+CUSTOM_LULC_OUTPUT = ROOT / "IBGE_method" / "own_LULC" / "outputs" / "lulc_custom_10m.tif"
 
 DL_SOURCE_OUTPUTS = {
     "susceptibility": ROOT / "outputs" / "test_susceptibility.tif",
@@ -526,6 +527,86 @@ def map_mapbiomas_to_ibge_notes(raw: np.ndarray, valid: np.ndarray) -> Tuple[np.
     return notes, unknown
 
 
+def custom_lulc_land_use_mapping() -> Dict[int, float]:
+    from IBGE_method.own_LULC.lulc_inputs import class_definitions
+
+    return {
+        int(class_value): float(definition["ibge_land_use_note"])
+        for class_value, definition in class_definitions.items()
+    }
+
+
+def map_custom_lulc_to_ibge_notes(
+    raw: np.ndarray, valid: np.ndarray, mapping: Mapping[int, float]
+) -> Tuple[np.ndarray, List[int]]:
+    notes = np.zeros(raw.shape, dtype=np.float32)
+    unknown = []
+    for code in np.unique(raw):
+        code_int = int(code)
+        if code_int == 0:
+            continue
+        if code_int in mapping:
+            notes[raw == code_int] = float(mapping[code_int])
+        else:
+            unknown.append(code_int)
+    notes[~valid] = 0.0
+    return notes, unknown
+
+
+def ibge_land_use_source_metadata() -> Dict[str, Any]:
+    if CUSTOM_LULC_OUTPUT.exists():
+        mapping = custom_lulc_land_use_mapping()
+        return {
+            "source": "Custom polygon-trained LULC",
+            "path": str(CUSTOM_LULC_OUTPUT),
+            "class_to_ibge_note": {str(k): v for k, v in sorted(mapping.items())},
+        }
+    return {
+        "source": "MapBiomas 10m collection 2 integration 2023",
+        "url": MAPBIOMAS_10M_2023_URL,
+    }
+
+
+def load_ibge_land_use(
+    reference: DatasetReader, valid: np.ndarray
+) -> Tuple[np.ndarray, np.ndarray, List[int], Dict[str, Any], str, str]:
+    if CUSTOM_LULC_OUTPUT.exists():
+        raw = reproject_raster_to_reference(
+            CUSTOM_LULC_OUTPUT,
+            reference,
+            resampling=Resampling.nearest,
+            dtype="uint8",
+            dst_nodata=0,
+        )
+        mapping = custom_lulc_land_use_mapping()
+        notes, unknown = map_custom_lulc_to_ibge_notes(raw, valid, mapping)
+        return (
+            raw,
+            notes,
+            unknown,
+            ibge_land_use_source_metadata(),
+            "ibge_land_use_custom_lulc.tif",
+            "Custom polygon-trained LULC reprojected by nearest neighbor",
+        )
+
+    raw = reproject_raster_to_reference(
+        MAPBIOMAS_10M_2023_URL,
+        reference,
+        resampling=Resampling.nearest,
+        dtype="uint8",
+        dst_nodata=0,
+    )
+    notes, unknown = map_mapbiomas_to_ibge_notes(raw, valid)
+    return (
+        raw,
+        notes,
+        unknown,
+        ibge_land_use_source_metadata(),
+        "ibge_land_use_mapbiomas_2023.tif",
+        "MapBiomas 10m 2023 class reprojected by nearest neighbor",
+    )
+
+
 def classify_ibge_final(score_1_to_10: np.ndarray, valid: np.ndarray) -> Tuple[np.ndarray, np.ndarray]:
     class5 = np.full(score_1_to_10.shape, 255, dtype=np.uint8)
     class5[(score_1_to_10 >= 0.0) & (score_1_to_10 < 3.5) & valid] = 1
@@ -576,18 +657,19 @@ def generate_ibge_method(reference: DatasetReader, dirs: MethodDirs) -> Dict[str
     pluviosity_note = classify_pluviosity(rain, dtm_valid)
     del rain
 
-    mapbiomas_raw = reproject_raster_to_reference(
-        MAPBIOMAS_10M_2023_URL,
-        reference,
-        resampling=Resampling.nearest,
-        dtype="uint8",
-        dst_nodata=0,
-    )
-    land_use_note, unknown_land_use = map_mapbiomas_to_ibge_notes(mapbiomas_raw, dtm_valid)
+    (
+        land_use_raw,
+        land_use_note,
+        unknown_land_use,
+        land_use_source,
+        land_use_output_name,
+        land_use_description,
+    ) = load_ibge_land_use(reference, dtm_valid)
     if unknown_land_use:
         raise RuntimeError(
-            "MapBiomas returned unmapped land-use classes inside the drone bbox: "
-            f"{unknown_land_use}. Add real class mappings before generating IBGE output."
+            "The selected IBGE land-use source returned unmapped classes inside "
+            f"the drone bbox: {unknown_land_use}. Add real class mappings before "
+            "generating IBGE output."
         )
 
     valid = (
@@ -645,12 +727,12 @@ def generate_ibge_method(reference: DatasetReader, dirs: MethodDirs) -> Dict[str
         description="Valid pixels for IBGE adapted method",
     )
     write_single_band(
-        dirs.outputs / "ibge_land_use_mapbiomas_2023.tif",
-        mapbiomas_raw,
+        dirs.outputs / land_use_output_name,
+        land_use_raw,
         reference,
         dtype="uint8",
         nodata=0,
-        description="MapBiomas 10m 2023 class reprojected by nearest neighbor",
+        description=land_use_description,
     )
 
     config = {
@@ -666,7 +748,7 @@ def generate_ibge_method(reference: DatasetReader, dirs: MethodDirs) -> Dict[str
             [75, None, 10],
         ],
         "classification_breaks_1_to_10": [0, 3.5, 4.5, 5.5, 6.5, 10],
-        "land_use_source": MAPBIOMAS_10M_2023_URL,
+        "land_use_source": land_use_source,
         "terrain_analysis_resolution_m": 10.0,
         "note": (
             "This is not the strict national IBGE 1 km statistical-grid product; "
@@ -684,7 +766,8 @@ def generate_ibge_method(reference: DatasetReader, dirs: MethodDirs) -> Dict[str
             "relief": relief_meta,
             "geology": geology_meta,
             "pedology": pedology_meta,
-            "mapbiomas_classes": sorted(int(x) for x in np.unique(mapbiomas_raw) if int(x) != 0),
+            "land_use": land_use_source,
+            "land_use_classes": sorted(int(x) for x in np.unique(land_use_raw) if int(x) != 0),
         },
         "class_distribution": class_distribution(class3, reference),
     }
@@ -1288,10 +1371,7 @@ def write_provenance(reference: DatasetReader, dirs: Dict[str, MethodDirs], vali
         "municipal_sig_root": str(SIG_ROOT),
         "source_layers": {key: str(path) for key, path in SIG_PATHS.items()},
         "ground_truth_25m": str(GROUND_TRUTH_25M),
-        "land_use": {
-            "source": "MapBiomas 10m collection 2 integration 2023",
-            "url": MAPBIOMAS_10M_2023_URL,
-        },
+        "land_use": ibge_land_use_source_metadata(),
         "official_references": {
             "ibge_susceptibility": "https://biblioteca.ibge.gov.br/index.php/biblioteca-catalogo?id=2101684&view=detalhes",
             "ibge_pedology_complement": "https://biblioteca.ibge.gov.br/index.php/biblioteca-catalogo?id=2102076&view=detalhes",

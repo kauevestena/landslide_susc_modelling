@@ -2,26 +2,27 @@
   "class_distribution": {
     "classes": {
       "1": {
-        "area_m2": 26523.827200002168,
-        "fraction": 0.02468849535755864,
-        "pixels": 1036087
+        "area_m2": 67689.21600000553,
+        "fraction": 0.0685847142133676,
+        "pixels": 2644110
       },
       "2": {
-        "area_m2": 109513.21600000895,
-        "fraction": 0.10193538452879518,
-        "pixels": 4277860
+        "area_m2": 106578.17600000871,
+        "fraction": 0.1079881578528254,
+        "pixels": 4163210
       },
       "3": {
-        "area_m2": 938302.5152000767,
-        "fraction": 0.8733761201136463,
-        "pixels": 36652442
+        "area_m2": 812675.7888000665,
+        "fraction": 0.823427127933807,
+        "pixels": 31745148
       }
     },
-    "total_valid_area_m2": 1074339.5584000878
+    "total_valid_area_m2": 986943.1808000806
   },
   "outputs": [
     "IBGE_method/outputs/ibge_class_map_3class.tif",
     "IBGE_method/outputs/ibge_class_map_5class.tif",
+    "IBGE_method/outputs/ibge_land_use_custom_lulc.tif",
     "IBGE_method/outputs/ibge_land_use_mapbiomas_2023.tif",
     "IBGE_method/outputs/ibge_susceptibility_score.tif",
     "IBGE_method/outputs/ibge_valid_mask.tif"
@@ -34,13 +35,23 @@
         "PRps"
       ]
     },
-    "mapbiomas_classes": [
+    "land_use": {
+      "class_to_ibge_note": {
+        "1": 10.0,
+        "2": 5.0,
+        "3": 0.0,
+        "4": 2.0,
+        "5": 1.0
+      },
+      "path": "/home/kaue/landslide_susc_modelling/IBGE_method/own_LULC/outputs/lulc_custom_10m.tif",
+      "source": "Custom polygon-trained LULC"
+    },
+    "land_use_classes": [
+      1,
+      2,
       3,
-      15,
-      21,
-      24,
-      25,
-      33
+      4,
+      5
     ],
     "pedology": {
       "feature_count": 3,
@@ -61,5 +72,5 @@
       ]
     }
   },
-  "valid_fraction": 0.4055001508992317
+  "valid_fraction": 0.37251314597350277
 }

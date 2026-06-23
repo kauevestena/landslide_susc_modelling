@@ -8,6 +8,7 @@ This is not the strict national IBGE 1 km statistical-grid product; it applies t
 ## Outputs
 - `IBGE_method/outputs/ibge_class_map_3class.tif`
 - `IBGE_method/outputs/ibge_class_map_5class.tif`
+- `IBGE_method/outputs/ibge_land_use_custom_lulc.tif`
 - `IBGE_method/outputs/ibge_land_use_mapbiomas_2023.tif`
 - `IBGE_method/outputs/ibge_susceptibility_score.tif`
 - `IBGE_method/outputs/ibge_valid_mask.tif`

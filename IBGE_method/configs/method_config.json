@@ -7,7 +7,17 @@
     6.5,
     10
   ],
-  "land_use_source": "https://storage.googleapis.com/mapbiomas-public/initiatives/brasil/lulc_10m/collection_2/integration/mapbiomas_10m_collection2_integration_v1-classification_2023.tif",
+  "land_use_source": {
+    "class_to_ibge_note": {
+      "1": 10.0,
+      "2": 5.0,
+      "3": 0.0,
+      "4": 2.0,
+      "5": 1.0
+    },
+    "path": "/home/kaue/landslide_susc_modelling/IBGE_method/own_LULC/outputs/lulc_custom_10m.tif",
+    "source": "Custom polygon-trained LULC"
+  },
   "method": "High-resolution local adaptation of IBGE weighted susceptibility",
   "note": "This is not the strict national IBGE 1 km statistical-grid product; it applies the IBGE thematic scoring logic on the drone footprint. Slope is derived from the real drone DTM on a 10 m analysis grid to avoid centimeter-scale surface roughness dominating the IBGE weights.",
   "reference_grid": {

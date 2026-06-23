@@ -47,6 +47,14 @@ The separate three-method comparison command is:
 
 It generates DL, IBGE-adapted, and SGB-style susceptibility products on the same feb26 16 cm drone DTM footprint.
 
+The IBGE method can optionally use a custom local LULC raster trained from the polygons in `IBGE_method/own_LULC/extra_data/Classes_Uso_Solo.gpkg`:
+
+```bash
+.venv/bin/python -m IBGE_method.own_LULC.implementation.pipeline
+```
+
+All custom LULC paths, model settings, split settings, augmentation settings, inference settings, and class-to-IBGE land-use note mappings live in `IBGE_method/own_LULC/lulc_inputs.py`. When `IBGE_method/own_LULC/outputs/lulc_custom_10m.tif` exists, `manage.py three-methods` uses it for the IBGE land-use term; otherwise it falls back to MapBiomas.
+
 ## 2. Repository Map
 
 Maintained source files:
@@ -65,6 +73,7 @@ Maintained source files:
 - `src/visualize.py`: ROC, PR, calibration, and training-history plots.
 - `src/soft_labels.py`: ordinal and gaussian soft-label generation.
 - `src/external_data_fetch/`: ESA WorldCover and Google Dynamic World fetchers.
+- `IBGE_method/own_LULC/`: custom polygon-trained LULC workflow for the IBGE land-use term.
 - `*.sh`: compatibility wrappers that call `manage.py`.
 
 Maintained Markdown docs:
