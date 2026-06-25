@@ -53,7 +53,30 @@ The IBGE method can optionally use a custom local LULC raster trained from the p
 .venv/bin/python -m IBGE_method.own_LULC.implementation.pipeline
 ```
 
-All custom LULC paths, model settings, split settings, augmentation settings, inference settings, and class-to-IBGE land-use note mappings live in `IBGE_method/own_LULC/lulc_inputs.py`. When `IBGE_method/own_LULC/outputs/lulc_custom_10m.tif` exists, `manage.py three-methods` uses it for the IBGE land-use term; otherwise it falls back to MapBiomas.
+All custom LULC paths, model settings, split settings, augmentation settings, inference settings, and class-to-IBGE land-use note mappings live in `IBGE_method/own_LULC/lulc_inputs.py`. When the configured custom LULC output exists, `manage.py three-methods` uses it for the IBGE land-use term; otherwise it falls back to MapBiomas.
+
+The custom LULC workflow also supports staged experiment sweeps:
+
+```bash
+.venv/bin/python -m IBGE_method.own_LULC.implementation.pipeline --sweep
+```
+
+Sweep runs are stored under `IBGE_method/own_LULC/outputs/experiments/<run_id>/`, summarized in `sweep_results.json` and `sweep_results.csv`, and the selected run is promoted to the canonical custom LULC filenames. The splitter keeps spatial blocks intact while optimizing train/val/test percentages per class and records achieved class fractions in `lulc_model_metadata.json`.
+
+For external CUDA execution of the full-resolution 16 cm LULC ensemble, package the source with:
+
+```bash
+bash IBGE_method/own_LULC/package_external_cuda.sh
+```
+
+On the external machine, create the CUDA environment and run the full-resolution workflow with:
+
+```bash
+bash IBGE_method/own_LULC/setup_external_cuda_venv.sh
+bash IBGE_method/own_LULC/run_fullres_external.sh /path/to/orthophoto.tif
+```
+
+The wrapper accepts optional output directory and polygon path arguments, writes logs under the output directory, resumes completed full-resolution voter runs, and promotes the 16 cm ensemble only inside the configured output directory.
 
 ## 2. Repository Map
 

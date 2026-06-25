@@ -34,10 +34,18 @@ def validate_config(config: Dict[str, Any]) -> Tuple[Dict[str, Any], Dict[str, A
         raise ValueError("class_definitions count must match model.output_classes")
 
     with rasterio.open(ortho_path) as src:
-        if src.count < int(params["model"]["input_channels"]):
+        if src.count < 3:
             raise ValueError(
-                f"Orthophoto has {src.count} bands, but model.input_channels="
-                f"{params['model']['input_channels']}"
+                f"Orthophoto has {src.count} bands, but the LULC workflow requires RGB."
+            )
+        feature_set = params["feature_set"]
+        if feature_set not in config["feature_sets"]:
+            raise ValueError(f"Unknown LULC feature_set: {feature_set}")
+        expected_channels = len(config["feature_sets"][feature_set]["channels"])
+        if expected_channels != int(params["model"]["input_channels"]):
+            raise ValueError(
+                f"feature_set {feature_set} has {expected_channels} channels, "
+                f"but model.input_channels={params['model']['input_channels']}"
             )
         ortho_meta = {
             "path": str(ortho_path),

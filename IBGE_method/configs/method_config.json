@@ -15,7 +15,7 @@
       "4": 2.0,
       "5": 1.0
     },
-    "path": "/home/kaue/landslide_susc_modelling/IBGE_method/own_LULC/outputs/lulc_custom_10m.tif",
+    "path": "/home/kaue/landslide_susc_modelling/IBGE_method/own_LULC/outputs/lulc_custom_1m.tif",
     "source": "Custom polygon-trained LULC"
   },
   "method": "High-resolution local adaptation of IBGE weighted susceptibility",

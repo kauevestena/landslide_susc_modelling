@@ -1,0 +1,12 @@
+# Optional environment overrides for external full-resolution LULC runs.
+# You can source this file or pass paths directly to run_fullres_external.sh.
+
+export LULC_INPUT_ORTHO="/path/to/RGB_or_RGBA_orthophoto_16cm.tif"
+export LULC_INPUT_POLYGONS="$PWD/IBGE_method/own_LULC/extra_data/Classes_Uso_Solo.gpkg"
+export LULC_OUTPUT_DIR="$PWD/IBGE_method/own_LULC/outputs_fullres"
+
+# Optional runner toggles.
+# export LULC_FORCE=1
+# export LULC_SMOKE=1
+# export LULC_NO_PROMOTE=1
+# export LULC_SKIP_PREFLIGHT=1

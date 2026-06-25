@@ -10,11 +10,15 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 from scipy.ndimage import gaussian_filter
-from torch.utils.data import DataLoader, Dataset
+from torch.utils.data import DataLoader, Dataset, WeightedRandomSampler
 
 from .config import output_path
 from .metrics import confusion_metrics
-from .tiles import TileRecord, extract_window, window_starts
+from .tiles import TileRecord, build_feature_stack, extract_window, window_starts
+
+
+def log(message: str) -> None:
+    print(f"[lulc] {message}", flush=True)
 
 
 class LULCTileDataset(Dataset):
@@ -75,38 +79,55 @@ class LULCTileDataset(Dataset):
         return np.clip(image, 0.0, 1.0), label.copy()
 
 
-class CombinedCrossEntropyDice(nn.Module):
+class ConfiguredSegmentationLoss(nn.Module):
     def __init__(
         self,
+        name: str,
         num_classes: int,
         ignore_index: int,
         class_weights: Optional[torch.Tensor],
-        cross_entropy_weight: float,
-        dice_weight: float,
+        loss_cfg: Dict[str, Any],
     ) -> None:
         super().__init__()
+        self.name = name
         self.num_classes = int(num_classes)
         self.ignore_index = int(ignore_index)
-        self.cross_entropy_weight = float(cross_entropy_weight)
-        self.dice_weight = float(dice_weight)
+        self.loss_cfg = loss_cfg
         self.ce = nn.CrossEntropyLoss(weight=class_weights, ignore_index=ignore_index)
+        self.dice = smp.losses.DiceLoss(
+            mode="multiclass", from_logits=True, ignore_index=ignore_index
+        )
+        self.focal = smp.losses.FocalLoss(
+            mode="multiclass",
+            gamma=float(loss_cfg.get("focal_gamma", 2.0)),
+            ignore_index=ignore_index,
+        )
+        self.lovasz = smp.losses.LovaszLoss(
+            mode="multiclass", ignore_index=ignore_index, from_logits=True
+        )
 
     def forward(self, logits: torch.Tensor, labels: torch.Tensor) -> torch.Tensor:
-        ce = self.ce(logits, labels)
-        valid = labels != self.ignore_index
-        if not bool(valid.any()):
-            return ce
-        probs = torch.softmax(logits, dim=1)
-        clamped = labels.clamp(0, self.num_classes - 1)
-        one_hot = F.one_hot(clamped, num_classes=self.num_classes).permute(0, 3, 1, 2).float()
-        valid_f = valid.unsqueeze(1).float()
-        probs = probs * valid_f
-        one_hot = one_hot * valid_f
-        dims = (0, 2, 3)
-        intersection = torch.sum(probs * one_hot, dims)
-        denominator = torch.sum(probs + one_hot, dims)
-        dice = 1.0 - torch.mean((2.0 * intersection + 1e-6) / (denominator + 1e-6))
-        return self.cross_entropy_weight * ce + self.dice_weight * dice
+        if self.name == "weighted_ce_dice":
+            return (
+                float(self.loss_cfg["cross_entropy_weight"]) * self.ce(logits, labels)
+                + float(self.loss_cfg["dice_weight"]) * self.dice(logits, labels)
+            )
+        if self.name == "focal_dice":
+            return (
+                float(self.loss_cfg["focal_weight"]) * self.focal(logits, labels)
+                + float(self.loss_cfg["dice_weight"]) * self.dice(logits, labels)
+            )
+        if self.name == "weighted_ce_lovasz":
+            return (
+                float(self.loss_cfg["cross_entropy_weight"]) * self.ce(logits, labels)
+                + float(self.loss_cfg["lovasz_weight"]) * self.lovasz(logits, labels)
+            )
+        if self.name == "focal_lovasz":
+            return (
+                float(self.loss_cfg["focal_weight"]) * self.focal(logits, labels)
+                + float(self.loss_cfg["lovasz_weight"]) * self.lovasz(logits, labels)
+            )
+        raise ValueError(f"Unsupported LULC loss: {self.name}")
 
 
 def select_device(use_cuda: bool) -> torch.device:
@@ -115,17 +136,30 @@ def select_device(use_cuda: bool) -> torch.device:
             test_input = torch.randn(1, 3, 16, 16).cuda()
             test_conv = torch.nn.Conv2d(3, 3, 3).cuda()
             _ = test_conv(test_input)
+            log("using CUDA device for LULC model")
             return torch.device("cuda")
         except (RuntimeError, AssertionError):
+            log("CUDA requested but unavailable/incompatible; using CPU")
             return torch.device("cpu")
+    if use_cuda:
+        log("CUDA requested but torch.cuda is unavailable; using CPU")
+    else:
+        log("CUDA disabled by config; using CPU")
     return torch.device("cpu")
 
 
 def create_model(config: Dict[str, Any]) -> nn.Module:
     model_cfg = config["params"]["model"]
-    if model_cfg["architecture"].lower() != "unet":
+    constructors = {
+        "unet": smp.Unet,
+        "unetplusplus": smp.UnetPlusPlus,
+        "deeplabv3plus": smp.DeepLabV3Plus,
+        "fpn": smp.FPN,
+    }
+    architecture = model_cfg["architecture"].lower()
+    if architecture not in constructors:
         raise ValueError(f"Unsupported LULC architecture: {model_cfg['architecture']}")
-    return smp.Unet(
+    return constructors[architecture](
         encoder_name=model_cfg["encoder"],
         encoder_weights=model_cfg["encoder_weights"],
         in_channels=int(model_cfg["input_channels"]),
@@ -171,13 +205,57 @@ def make_loader(
         int(params["ignore_index"]),
         params["augmentation"] if training else None,
     )
+    sampler = None
+    shuffle = training
+    if training and config["sampler"]["strategy"] == "class_balanced_weighted":
+        weights = compute_tile_sampling_weights(
+            records,
+            class_values,
+            int(params["ignore_index"]),
+            float(config["sampler"]["rare_class_power"]),
+            float(config["sampler"]["max_weight"]),
+        )
+        sampler = WeightedRandomSampler(weights, num_samples=len(weights), replacement=True)
+        shuffle = False
     return DataLoader(
         dataset,
         batch_size=int(params["training"]["batch_size"]),
-        shuffle=training,
+        shuffle=shuffle,
+        sampler=sampler,
         num_workers=int(params["training"]["num_workers"]),
         pin_memory=False,
     )
+
+
+def compute_tile_sampling_weights(
+    records: Sequence[TileRecord],
+    class_values: Sequence[int],
+    ignore_index: int,
+    rare_class_power: float,
+    max_weight: float,
+) -> List[float]:
+    counts = {class_value: 0.0 for class_value in class_values}
+    for record in records:
+        for class_value in class_values:
+            counts[class_value] += float(np.count_nonzero(record.label == class_value))
+    total = sum(counts.values())
+    if total <= 0:
+        return [1.0 for _ in records]
+    class_weights = {
+        class_value: (total / max(1.0, counts[class_value])) ** rare_class_power
+        for class_value in class_values
+    }
+    weights = []
+    for record in records:
+        labeled = float(np.count_nonzero(record.label != ignore_index))
+        if labeled <= 0:
+            weights.append(1.0)
+            continue
+        score = 0.0
+        for class_value in class_values:
+            score += class_weights[class_value] * float(np.count_nonzero(record.label == class_value))
+        weights.append(float(min(max_weight, max(1.0, score / labeled))))
+    return weights
 
 
 def evaluate(
@@ -232,6 +310,12 @@ def train_model(
     np.random.seed(int(params["random_seed"]))
     device = select_device(bool(training_cfg["use_cuda"]))
 
+    log(
+        "creating model: "
+        f"{params['model']['architecture']}/{params['model']['encoder']} "
+        f"in_channels={params['model']['input_channels']} "
+        f"classes={params['model']['output_classes']}"
+    )
     model = create_model(config).to(device)
     weights = compute_class_weights(
         splits["train"],
@@ -241,12 +325,13 @@ def train_model(
     )
     if weights is not None:
         weights = weights.to(device)
-    loss_fn = CombinedCrossEntropyDice(
+    log(f"class weights: {weights.detach().cpu().tolist() if weights is not None else []}")
+    loss_fn = ConfiguredSegmentationLoss(
+        name=params["loss"]["name"],
         num_classes=len(class_values),
         ignore_index=int(params["ignore_index"]),
         class_weights=weights,
-        cross_entropy_weight=float(training_cfg["cross_entropy_weight"]),
-        dice_weight=float(training_cfg["dice_weight"]),
+        loss_cfg=params["loss"],
     )
     if training_cfg["optimizer"].lower() != "adamw":
         raise ValueError(f"Unsupported optimizer: {training_cfg['optimizer']}")
@@ -268,6 +353,11 @@ def train_model(
     test_loader = make_loader(splits["test"], config, class_values, training=False)
     if train_loader is None:
         raise ValueError("No training tiles available.")
+    log(
+        "training loaders: "
+        f"train_tiles={len(splits['train'])} val_tiles={len(splits['val'])} "
+        f"test_tiles={len(splits['test'])} batch_size={training_cfg['batch_size']}"
+    )
 
     best_score = -float("inf")
     best_state = None
@@ -276,6 +366,7 @@ def train_model(
     best_metric_name = training_cfg["save_best_metric"]
 
     for epoch in range(1, int(training_cfg["epochs"]) + 1):
+        log(f"epoch {epoch}/{training_cfg['epochs']} started")
         model.train()
         train_loss = 0.0
         train_batches = 0
@@ -316,14 +407,27 @@ def train_model(
             best_score = score
             best_state = {key: value.detach().cpu() for key, value in model.state_dict().items()}
             epochs_without_improvement = 0
+            improved = True
         else:
             epochs_without_improvement += 1
+            improved = False
+        log(
+            f"epoch {epoch}/{training_cfg['epochs']} done: "
+            f"train_loss={train_loss / max(1, train_batches):.6f} "
+            f"val_loss={val_result['loss']:.6f} "
+            f"{best_metric_name}={score:.6f} "
+            f"best={best_score:.6f} "
+            f"improved={improved} "
+            f"patience={epochs_without_improvement}/{training_cfg['early_stopping_patience']}"
+        )
         if epochs_without_improvement >= int(training_cfg["early_stopping_patience"]):
+            log(f"early stopping at epoch {epoch}")
             break
 
     if best_state is not None:
         model.load_state_dict(best_state)
     model_path = output_path(config, "model_filename")
+    log(f"saving best model: {model_path}")
     torch.save(
         {
             "model_state_dict": model.state_dict(),
@@ -333,11 +437,21 @@ def train_model(
         model_path,
     )
     test_result = evaluate(model, test_loader, loss_fn, device, len(class_values))
+    log(
+        "test metrics: "
+        f"loss={test_result['loss']:.6f} "
+        f"macro_iou={test_result['metrics']['macro_iou']:.6f} "
+        f"overall_accuracy={test_result['metrics']['overall_accuracy']:.6f}"
+    )
     return model, {
         "device": str(device),
         "class_values": class_values,
         "class_weights": weights.detach().cpu().tolist() if weights is not None else [],
         "best_score": best_score,
+        "best_epoch": int(max(history, key=lambda item: item["score"])["epoch"]) if history else 0,
+        "loss": params["loss"],
+        "model": params["model"],
+        "feature_set": params["feature_set"],
         "history": history,
         "test": test_result,
         "model_path": str(model_path),
@@ -358,7 +472,7 @@ def infer_full_raster(
     model = model.to(device)
     model.eval()
 
-    features = rgb.astype(np.float32) / 255.0
+    features = build_feature_stack(config, rgb)
     window_size = int(inference_cfg["window_size"])
     overlap = int(inference_cfg["overlap"])
     stride = max(1, window_size - overlap)
@@ -368,6 +482,15 @@ def infer_full_raster(
     weight_sum = np.zeros((height, width), dtype=np.float32)
 
     pending: List[Tuple[int, int, np.ndarray]] = []
+    y_starts = window_starts(height, window_size, stride)
+    x_starts = window_starts(width, window_size, stride)
+    total_windows = len(y_starts) * len(x_starts)
+    processed_windows = 0
+    log(
+        "inference windows: "
+        f"grid={width}x{height} window={window_size} overlap={overlap} "
+        f"stride={stride} windows={total_windows} batch_size={batch_size}"
+    )
 
     def flush() -> None:
         if not pending:
@@ -375,15 +498,19 @@ def infer_full_raster(
         batch = torch.from_numpy(np.stack([item[2] for item in pending])).to(device)
         with torch.no_grad():
             probs = torch.softmax(model(batch), dim=1).detach().cpu().numpy()
+        nonlocal processed_windows
         for (y, x, _tile), prob in zip(pending, probs):
             y1 = min(y + window_size, height)
             x1 = min(x + window_size, width)
             prob_sum[:, y:y1, x:x1] += prob[:, : y1 - y, : x1 - x]
             weight_sum[y:y1, x:x1] += 1.0
+            processed_windows += 1
+        if processed_windows % 25 == 0 or processed_windows == total_windows:
+            log(f"inference progress: {processed_windows}/{total_windows} windows")
         pending.clear()
 
-    for y in window_starts(height, window_size, stride):
-        for x in window_starts(width, window_size, stride):
+    for y in y_starts:
+        for x in x_starts:
             pending.append((y, x, extract_window(features, y, x, window_size, 0.0)))
             if len(pending) >= batch_size:
                 flush()

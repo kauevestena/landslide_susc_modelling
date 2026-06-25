@@ -536,6 +536,19 @@ def custom_lulc_land_use_mapping() -> Dict[int, float]:
     }
 
 
+def custom_lulc_output_path() -> Path:
+    selected_path = ROOT / "IBGE_method" / "own_LULC" / "outputs" / "selected_experiment.json"
+    if selected_path.exists():
+        selected = json.loads(selected_path.read_text(encoding="utf-8"))
+        promoted = selected.get("promoted_lulc")
+        if promoted:
+            return Path(promoted)
+    from IBGE_method.own_LULC.implementation.config import load_config, output_path
+
+    config = load_config()
+    return output_path(config, "lulc_filename")
+
+
 def map_custom_lulc_to_ibge_notes(
     raw: np.ndarray, valid: np.ndarray, mapping: Mapping[int, float]
 ) -> Tuple[np.ndarray, List[int]]:
@@ -554,11 +567,12 @@ def map_custom_lulc_to_ibge_notes(
 
 
 def ibge_land_use_source_metadata() -> Dict[str, Any]:
-    if CUSTOM_LULC_OUTPUT.exists():
+    custom_lulc = custom_lulc_output_path()
+    if custom_lulc.exists():
         mapping = custom_lulc_land_use_mapping()
         return {
             "source": "Custom polygon-trained LULC",
-            "path": str(CUSTOM_LULC_OUTPUT),
+            "path": str(custom_lulc),
             "class_to_ibge_note": {str(k): v for k, v in sorted(mapping.items())},
         }
     return {
@@ -570,9 +584,10 @@ def ibge_land_use_source_metadata() -> Dict[str, Any]:
 def load_ibge_land_use(
     reference: DatasetReader, valid: np.ndarray
 ) -> Tuple[np.ndarray, np.ndarray, List[int], Dict[str, Any], str, str]:
-    if CUSTOM_LULC_OUTPUT.exists():
+    custom_lulc = custom_lulc_output_path()
+    if custom_lulc.exists():
         raw = reproject_raster_to_reference(
-            CUSTOM_LULC_OUTPUT,
+            custom_lulc,
             reference,
             resampling=Resampling.nearest,
             dtype="uint8",

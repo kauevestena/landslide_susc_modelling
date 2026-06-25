@@ -16,6 +16,10 @@ from rasterio.warp import reproject
 from .config import output_path
 
 
+def log(message: str) -> None:
+    print(f"[lulc] {message}", flush=True)
+
+
 def target_profile_from_ortho(src: rasterio.io.DatasetReader, resolution: float) -> Dict[str, Any]:
     width = int(np.ceil((src.bounds.right - src.bounds.left) / resolution))
     height = int(np.ceil((src.bounds.top - src.bounds.bottom) / resolution))
@@ -42,8 +46,15 @@ def resample_rgb(config: Dict[str, Any]) -> Tuple[np.ndarray, np.ndarray, Dict[s
     resolution = float(params["output_resolution"])
     with rasterio.open(config["input_ortho"]) as src:
         base_profile = target_profile_from_ortho(src, resolution)
+        log(
+            "resampling RGB orthophoto: "
+            f"source={src.width}x{src.height} target="
+            f"{base_profile['width']}x{base_profile['height']} "
+            f"resolution={resolution:g}m"
+        )
         rgb = np.zeros((3, base_profile["height"], base_profile["width"]), dtype=np.uint8)
         for band_idx in range(1, 4):
+            log(f"resampling RGB band {band_idx}/3")
             reproject(
                 source=rasterio.band(src, band_idx),
                 destination=rgb[band_idx - 1],
@@ -58,6 +69,7 @@ def resample_rgb(config: Dict[str, Any]) -> Tuple[np.ndarray, np.ndarray, Dict[s
 
         valid = np.ones((base_profile["height"], base_profile["width"]), dtype=bool)
         if bool(params["use_alpha_valid_mask"]) and src.count >= 4:
+            log("resampling alpha band for valid mask")
             alpha = np.zeros(valid.shape, dtype=np.uint8)
             reproject(
                 source=rasterio.band(src, 4),
@@ -78,6 +90,7 @@ def resample_rgb(config: Dict[str, Any]) -> Tuple[np.ndarray, np.ndarray, Dict[s
         dst.write(rgb)
         for idx, description in enumerate(("red", "green", "blue"), start=1):
             dst.set_band_description(idx, description)
+    log(f"wrote resampled RGB: {output_path(config, 'resampled_rgb_filename')}")
 
     return rgb, valid, base_profile
 
@@ -98,6 +111,10 @@ def rasterize_labels(
         for geometry, class_value in zip(polygons.geometry, polygons[value_field])
         if geometry is not None and not geometry.is_empty
     )
+    log(
+        "rasterizing polygon labels: "
+        f"rows={len(polygons)} shape={labels.shape[1]}x{labels.shape[0]}"
+    )
     burned = features.rasterize(
         shapes=shapes,
         out_shape=labels.shape,
@@ -113,6 +130,7 @@ def rasterize_labels(
     with rasterio.open(output_path(config, "training_labels_filename"), "w", **profile) as dst:
         dst.write(labels, 1)
         dst.set_band_description(1, "LULC training labels from polygons")
+    log(f"wrote training labels: {output_path(config, 'training_labels_filename')}")
     return labels
 
 

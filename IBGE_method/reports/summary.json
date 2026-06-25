@@ -2,22 +2,22 @@
   "class_distribution": {
     "classes": {
       "1": {
-        "area_m2": 67689.21600000553,
-        "fraction": 0.0685847142133676,
-        "pixels": 2644110
+        "area_m2": 61240.19200000501,
+        "fraction": 0.05755057163003013,
+        "pixels": 2392195
       },
       "2": {
-        "area_m2": 106578.17600000871,
-        "fraction": 0.1079881578528254,
-        "pixels": 4163210
+        "area_m2": 85685.913600007,
+        "fraction": 0.08052347889963134,
+        "pixels": 3347106
       },
       "3": {
-        "area_m2": 812675.7888000665,
-        "fraction": 0.823427127933807,
-        "pixels": 31745148
+        "area_m2": 917184.819200075,
+        "fraction": 0.8619259494703385,
+        "pixels": 35827532
       }
     },
-    "total_valid_area_m2": 986943.1808000806
+    "total_valid_area_m2": 1064110.924800087
   },
   "outputs": [
     "IBGE_method/outputs/ibge_class_map_3class.tif",
@@ -43,7 +43,7 @@
         "4": 2.0,
         "5": 1.0
       },
-      "path": "/home/kaue/landslide_susc_modelling/IBGE_method/own_LULC/outputs/lulc_custom_10m.tif",
+      "path": "/home/kaue/landslide_susc_modelling/IBGE_method/own_LULC/outputs/lulc_custom_1m.tif",
       "source": "Custom polygon-trained LULC"
     },
     "land_use_classes": [
@@ -72,5 +72,5 @@
       ]
     }
   },
-  "valid_fraction": 0.37251314597350277
+  "valid_fraction": 0.401639441837685
 }
