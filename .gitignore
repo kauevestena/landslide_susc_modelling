@@ -225,4 +225,6 @@ Ortho_4_GNSS-AAT_16cm.tif
 
 # Large raster outputs
 IBGE_method/own_LULC/outputs_fullres/*.tif
+!IBGE_method/own_LULC/outputs_fullres/lulc_custom_16cm.tif
+!IBGE_method/own_LULC/outputs_fullres/lulc_custom_ensemble_16cm.tif
 
