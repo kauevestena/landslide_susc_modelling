@@ -221,3 +221,8 @@ SGB_method/outputs/
 
 # IDE
 .vscode/
+Ortho_4_GNSS-AAT_16cm.tif
+
+# Large raster outputs
+IBGE_method/own_LULC/outputs_fullres/*.tif
+
