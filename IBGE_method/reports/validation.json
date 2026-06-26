@@ -82,18 +82,18 @@
           2,
           3
         ],
-        "overall_accuracy": 0.05755511852442547,
-        "pixels_compared": 41566833,
+        "overall_accuracy": 0.031083772284400107,
+        "pixels_compared": 43798352,
         "rows_reference_columns_prediction": [
           [
-            2392195,
-            3346917,
-            32223284
+            1349028,
+            3221328,
+            35461318
           ],
           [
             0,
-            189,
-            3604248
+            12390,
+            3754288
           ],
           [
             0,
@@ -108,18 +108,18 @@
           2,
           3
         ],
-        "overall_accuracy": 0.05755057163003013,
-        "pixels_compared": 41566833,
+        "overall_accuracy": 0.031089069287355834,
+        "pixels_compared": 43798352,
         "rows_reference_columns_prediction": [
           [
-            2392195,
-            3347106,
-            32085036
+            1349028,
+            3221096,
+            35308316
           ],
           [
             0,
-            0,
-            3742496
+            12622,
+            3907290
           ],
           [
             0,
@@ -131,22 +131,22 @@
       "class_distribution": {
         "classes": {
           "1": {
-            "area_m2": 61240.19200000501,
-            "fraction": 0.05755057163003013,
-            "pixels": 2392195
+            "area_m2": 34535.11680000283,
+            "fraction": 0.030800884928273105,
+            "pixels": 1349028
           },
           "2": {
-            "area_m2": 85685.913600007,
-            "fraction": 0.08052347889963134,
-            "pixels": 3347106
+            "area_m2": 82783.18080000677,
+            "fraction": 0.07383195605167976,
+            "pixels": 3233718
           },
           "3": {
-            "area_m2": 917184.819200075,
-            "fraction": 0.8619259494703385,
-            "pixels": 35827532
+            "area_m2": 1003919.5136000821,
+            "fraction": 0.8953671590200473,
+            "pixels": 39215606
           }
         },
-        "total_valid_area_m2": 1064110.924800087
+        "total_valid_area_m2": 1121237.8112000916
       },
       "prediction": "IBGE_method/outputs/ibge_class_map_3class.tif"
     },

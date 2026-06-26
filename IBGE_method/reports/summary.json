@@ -2,37 +2,108 @@
   "class_distribution": {
     "classes": {
       "1": {
-        "area_m2": 61240.19200000501,
-        "fraction": 0.05755057163003013,
-        "pixels": 2392195
+        "area_m2": 34535.11680000283,
+        "fraction": 0.030800884928273105,
+        "pixels": 1349028
       },
       "2": {
-        "area_m2": 85685.913600007,
-        "fraction": 0.08052347889963134,
-        "pixels": 3347106
+        "area_m2": 82783.18080000677,
+        "fraction": 0.07383195605167976,
+        "pixels": 3233718
       },
       "3": {
-        "area_m2": 917184.819200075,
-        "fraction": 0.8619259494703385,
-        "pixels": 35827532
+        "area_m2": 1003919.5136000821,
+        "fraction": 0.8953671590200473,
+        "pixels": 39215606
       }
     },
-    "total_valid_area_m2": 1064110.924800087
+    "total_valid_area_m2": 1121237.8112000916
   },
+  "class_distribution_5class": {
+    "classes": {
+      "1": {
+        "area_m2": 4440.038400000363,
+        "fraction": 0.003959943515682965,
+        "pixels": 173439
+      },
+      "2": {
+        "area_m2": 30095.07840000246,
+        "fraction": 0.02684094141259014,
+        "pixels": 1175589
+      },
+      "3": {
+        "area_m2": 82783.18080000677,
+        "fraction": 0.07383195605167976,
+        "pixels": 3233718
+      },
+      "4": {
+        "area_m2": 316940.13440002594,
+        "fraction": 0.2826698593590919,
+        "pixels": 12380474
+      },
+      "5": {
+        "area_m2": 686979.3792000562,
+        "fraction": 0.6126972996609553,
+        "pixels": 26835132
+      }
+    },
+    "total_valid_area_m2": 1121237.8112000916
+  },
+  "dtm_valid_fraction": 0.4345505961539045,
   "outputs": [
     "IBGE_method/outputs/ibge_class_map_3class.tif",
     "IBGE_method/outputs/ibge_class_map_5class.tif",
     "IBGE_method/outputs/ibge_land_use_custom_lulc.tif",
-    "IBGE_method/outputs/ibge_land_use_mapbiomas_2023.tif",
+    "IBGE_method/outputs/ibge_note_geology.tif",
+    "IBGE_method/outputs/ibge_note_geomorphology.tif",
+    "IBGE_method/outputs/ibge_note_land_use_vegetation.tif",
+    "IBGE_method/outputs/ibge_note_pedology.tif",
+    "IBGE_method/outputs/ibge_note_pluviosity.tif",
+    "IBGE_method/outputs/ibge_note_slope.tif",
+    "IBGE_method/outputs/ibge_pluviosity_pma_mm.tif",
     "IBGE_method/outputs/ibge_susceptibility_score.tif",
+    "IBGE_method/outputs/ibge_susceptibility_score_1to10.tif",
     "IBGE_method/outputs/ibge_valid_mask.tif"
   ],
+  "score_1_to_10_max": 8.942046165466309,
+  "score_1_to_10_min": 3.290553569793701,
   "theme_metadata": {
     "geology": {
+      "crs": "PROJCS[\"SIRGAS 2000 / UTM zone 24S\",GEOGCS[\"SIRGAS 2000\",DATUM[\"Sistema_de_Referencia_Geocentrico_para_las_AmericaS_2000\",SPHEROID[\"GRS 1980\",6378137,298.257222101004,AUTHORITY[\"EPSG\",\"7019\"]],TOWGS84[0,0,0,0,0,0,0],AUTHORITY[\"EPSG\",\"6674\"]],PRIMEM[\"Greenwich\",0],UNIT[\"degree\",0.0174532925199433,AUTHORITY[\"EPSG\",\"9122\"]],AUTHORITY[\"EPSG\",\"4674\"]],PROJECTION[\"Transverse_Mercator\"],PARAMETER[\"latitude_of_origin\",0],PARAMETER[\"central_meridian\",-39],PARAMETER[\"scale_factor\",0.9996],PARAMETER[\"false_easting\",500000],PARAMETER[\"false_northing\",10000000],UNIT[\"metre\",1,AUTHORITY[\"EPSG\",\"9001\"]],AXIS[\"Easting\",EAST],AXIS[\"Northing\",NORTH],AUTHORITY[\"EPSG\",\"31984\"]]",
       "feature_count": 1,
+      "field": "SIGLA_UNID",
+      "label": "Geology proxy",
+      "mapped_values": {
+        "PRps": 7.3
+      },
+      "name": "GEO",
+      "path": "/home/kaue/Downloads/05_Geospatial_Data_Maps/sig_cachoeirodoitapemirim_es_suscet/data_interest_area/06.Geologia/Geologia.shp",
+      "source_role": "Local higher-resolution SIG/SGB geology proxy for IBGE BDIA geology.",
       "unknown_values": [],
       "values": [
         "PRps"
+      ]
+    },
+    "geomorphology": {
+      "crs": "PROJCS[\"SIRGAS 2000 / UTM zone 24S\",GEOGCS[\"SIRGAS 2000\",DATUM[\"Sistema_de_Referencia_Geocentrico_para_las_AmericaS_2000\",SPHEROID[\"GRS 1980\",6378137,298.257222101004,AUTHORITY[\"EPSG\",\"7019\"]],TOWGS84[0,0,0,0,0,0,0],AUTHORITY[\"EPSG\",\"6674\"]],PRIMEM[\"Greenwich\",0],UNIT[\"degree\",0.0174532925199433,AUTHORITY[\"EPSG\",\"9122\"]],AUTHORITY[\"EPSG\",\"4674\"]],PROJECTION[\"Transverse_Mercator\"],PARAMETER[\"latitude_of_origin\",0],PARAMETER[\"central_meridian\",-39],PARAMETER[\"scale_factor\",0.9996],PARAMETER[\"false_easting\",500000],PARAMETER[\"false_northing\",10000000],UNIT[\"metre\",1,AUTHORITY[\"EPSG\",\"9001\"]],AXIS[\"Easting\",EAST],AXIS[\"Northing\",NORTH],AUTHORITY[\"EPSG\",\"31984\"]]",
+      "feature_count": 5,
+      "field": "Classe",
+      "label": "Geomorphology proxy",
+      "mapped_values": {
+        "Colinas": 3.0,
+        "Morros altos": 9.0,
+        "Morros baixos": 7.0,
+        "Plan\u00edcies e terra\u00e7os fluviais": 1.0
+      },
+      "name": "GEM",
+      "path": "/home/kaue/Downloads/05_Geospatial_Data_Maps/sig_cachoeirodoitapemirim_es_suscet/data_interest_area/04.Padr\u00f5esDeRelevo/Relevo.shp",
+      "source_role": "Local higher-resolution relief-pattern proxy for IBGE BDIA geomorphology.",
+      "unknown_values": [],
+      "values": [
+        "Colinas",
+        "Morros altos",
+        "Morros baixos",
+        "Plan\u00edcies e terra\u00e7os fluviais"
       ]
     },
     "land_use": {
@@ -54,23 +125,59 @@
       5
     ],
     "pedology": {
+      "crs": "PROJCS[\"SIRGAS 2000 / UTM zone 24S\",GEOGCS[\"SIRGAS 2000\",DATUM[\"Sistema_de_Referencia_Geocentrico_para_las_AmericaS_2000\",SPHEROID[\"GRS 1980\",6378137,298.257222101004,AUTHORITY[\"EPSG\",\"7019\"]],TOWGS84[0,0,0,0,0,0,0],AUTHORITY[\"EPSG\",\"6674\"]],PRIMEM[\"Greenwich\",0],UNIT[\"degree\",0.0174532925199433,AUTHORITY[\"EPSG\",\"9122\"]],AUTHORITY[\"EPSG\",\"4674\"]],PROJECTION[\"Transverse_Mercator\"],PARAMETER[\"latitude_of_origin\",0],PARAMETER[\"central_meridian\",-39],PARAMETER[\"scale_factor\",0.9996],PARAMETER[\"false_easting\",500000],PARAMETER[\"false_northing\",10000000],UNIT[\"metre\",1,AUTHORITY[\"EPSG\",\"9001\"]],AXIS[\"Easting\",EAST],AXIS[\"Northing\",NORTH],AUTHORITY[\"EPSG\",\"31984\"]]",
       "feature_count": 3,
+      "field": "DESC_",
+      "label": "Pedology proxy",
+      "mapped_values": {
+        "PEe1": 8.0,
+        "Rios": 0.0
+      },
+      "name": "PED",
+      "path": "/home/kaue/Downloads/05_Geospatial_Data_Maps/sig_cachoeirodoitapemirim_es_suscet/data_interest_area/07.Pedologia/Pedologia.shp",
+      "source_role": "Local higher-resolution pedology proxy for IBGE BDIA pedology.",
       "unknown_values": [],
       "values": [
         "PEe1",
         "Rios"
       ]
     },
-    "relief": {
-      "feature_count": 5,
-      "unknown_values": [],
-      "values": [
-        "Colinas",
-        "Morros altos",
-        "Morros baixos",
-        "Plan\u00edcies e terra\u00e7os fluviais"
-      ]
+    "pluviosity": {
+      "path": "/home/kaue/Downloads/05_Geospatial_Data_Maps/sig_cachoeirodoitapemirim_es_suscet/data_interest_area/08.Isoietas/AtlasPluviometrico/IsoietasAnuaisMedias/pma2",
+      "role": "IBGE-compatible rainfall input, resampled bilinearly and converted to a continuous adapted note through the IBGE rainfall thresholds.",
+      "source": "CPRM/SGB Atlas Pluviometrico annual mean precipitation"
+    },
+    "slope": {
+      "path": "/home/kaue/data/landslide/feb26/DTM_4_GNSS-AAT_16cm.tif",
+      "role": "Higher-resolution substitute for SRTM/CGIAR-CSI 90 m.",
+      "source": "Drone DTM"
     }
   },
-  "valid_fraction": 0.401639441837685
+  "theme_pixel_stats": {
+    "geology": {
+      "valid_note_pixels": 44972904,
+      "zero_or_excluded_pixels_on_valid_dtm": 0
+    },
+    "geomorphology": {
+      "valid_note_pixels": 44972904,
+      "zero_or_excluded_pixels_on_valid_dtm": 0
+    },
+    "land_use": {
+      "valid_note_pixels": 44140385,
+      "zero_or_excluded_pixels_on_valid_dtm": 832519
+    },
+    "pedology": {
+      "valid_note_pixels": 44420881,
+      "zero_or_excluded_pixels_on_valid_dtm": 552023
+    },
+    "pluviosity": {
+      "valid_note_pixels": 44972904,
+      "zero_or_excluded_pixels_on_valid_dtm": 0
+    },
+    "slope": {
+      "valid_note_pixels": 44972904,
+      "zero_or_excluded_pixels_on_valid_dtm": 0
+    }
+  },
+  "valid_fraction": 0.42320148977167577
 }

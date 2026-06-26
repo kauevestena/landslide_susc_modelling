@@ -6,6 +6,8 @@ import argparse
 import json
 import math
 import shutil
+from collections import Counter
+from contextlib import ExitStack
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Dict, Iterable, List, Mapping, Optional, Sequence, Tuple
@@ -18,6 +20,7 @@ from rasterio.enums import Resampling
 from rasterio.io import DatasetReader
 from rasterio.transform import Affine, from_bounds
 from rasterio.warp import reproject
+from rasterio.windows import Window
 from scipy.ndimage import distance_transform_edt, gaussian_filter, uniform_filter
 from shapely.geometry import box
 
@@ -55,6 +58,17 @@ class MethodDirs:
     outputs: Path
     configs: Path
     reports: Path
+
+
+@dataclass(frozen=True)
+class PreparedVectorTheme:
+    name: str
+    label: str
+    path: Path
+    field: str
+    mapping: Mapping[str, float]
+    shapes: Sequence[Tuple[Any, float]]
+    metadata: Dict[str, Any]
 
 
 def method_dirs(name: str) -> MethodDirs:
@@ -105,6 +119,9 @@ IBGE_WEIGHTS = {
     "land_use": 0.10,
     "pluviosity": 0.05,
 }
+
+IBGE_ADAPTED_TILE_SIZE = 1024
+IBGE_SLOPE_HALO_PIXELS = 1
 
 RELIEF_IBGE_NOTES = {
     "Plan\u00edcies e terra\u00e7os fluviais": 1.0,
@@ -438,6 +455,144 @@ def rasterize_vector_values(
     }
 
 
+def prepare_vector_theme_for_reference(
+    vector_path: Path,
+    reference: DatasetReader,
+    *,
+    name: str,
+    label: str,
+    field: str,
+    mapping: Mapping[str, float],
+    source_role: str,
+) -> PreparedVectorTheme:
+    gdf = gpd.read_file(vector_path)
+    if field not in gdf.columns:
+        raise RuntimeError(
+            f"{label} source {vector_path} does not contain required field {field!r}."
+        )
+
+    bbox_gdf = gpd.GeoDataFrame(geometry=[box(*reference.bounds)], crs=reference.crs)
+    clipped = gpd.overlay(gdf, bbox_gdf.to_crs(gdf.crs), how="intersection")
+    if clipped.empty:
+        raise RuntimeError(f"{label} source {vector_path} does not intersect the drone grid.")
+
+    clipped = clipped.to_crs(reference.crs)
+    values = sorted({str(value).strip() for value in clipped[field].dropna().tolist()})
+    unknown = sorted(value for value in values if value not in mapping)
+    if unknown:
+        raise RuntimeError(
+            f"{label} source has unmapped {field!r} values inside the drone bbox: {unknown}."
+        )
+
+    shapes = [
+        (row.geometry, float(mapping[str(row[field]).strip()]))
+        for _, row in clipped.iterrows()
+        if row.geometry is not None and not row.geometry.is_empty
+    ]
+    metadata = {
+        "name": name,
+        "label": label,
+        "source_role": source_role,
+        "path": str(vector_path),
+        "field": field,
+        "feature_count": int(len(clipped)),
+        "values": values,
+        "mapped_values": {value: float(mapping[value]) for value in values},
+        "unknown_values": unknown,
+        "crs": str(clipped.crs),
+    }
+    return PreparedVectorTheme(
+        name=name,
+        label=label,
+        path=vector_path,
+        field=field,
+        mapping=mapping,
+        shapes=shapes,
+        metadata=metadata,
+    )
+
+
+def rasterize_prepared_theme_window(
+    theme: PreparedVectorTheme,
+    reference: DatasetReader,
+    window: Window,
+    *,
+    fill: float = 0.0,
+    dtype: str = "float32",
+    all_touched: bool = True,
+) -> np.ndarray:
+    return features.rasterize(
+        theme.shapes,
+        out_shape=(int(window.height), int(window.width)),
+        transform=reference.window_transform(window),
+        fill=fill,
+        dtype=dtype,
+        all_touched=all_touched,
+    )
+
+
+def iter_grid_windows(reference: DatasetReader, tile_size: int) -> Iterable[Window]:
+    for row_off in range(0, reference.height, tile_size):
+        height = min(tile_size, reference.height - row_off)
+        for col_off in range(0, reference.width, tile_size):
+            width = min(tile_size, reference.width - col_off)
+            yield Window(col_off=col_off, row_off=row_off, width=width, height=height)
+
+
+def halo_window_for(reference: DatasetReader, window: Window, halo_pixels: int) -> Window:
+    col_off = max(0, int(window.col_off) - halo_pixels)
+    row_off = max(0, int(window.row_off) - halo_pixels)
+    right = min(reference.width, int(window.col_off + window.width) + halo_pixels)
+    bottom = min(reference.height, int(window.row_off + window.height) + halo_pixels)
+    return Window(col_off=col_off, row_off=row_off, width=right - col_off, height=bottom - row_off)
+
+
+def slope_note_and_valid_window(reference: DatasetReader, window: Window) -> Tuple[np.ndarray, np.ndarray]:
+    halo_window = halo_window_for(reference, window, IBGE_SLOPE_HALO_PIXELS)
+    dtm = reference.read(1, window=halo_window).astype(np.float32)
+    valid_halo = valid_mask_from_dtm(dtm, reference.nodata)
+    if not bool(valid_halo.any()):
+        shape = (int(window.height), int(window.width))
+        return np.zeros(shape, dtype=np.float32), np.zeros(shape, dtype=bool)
+
+    filled = fill_invalid_nearest(dtm, valid_halo)
+    _, slope_percent = slope_arrays(filled, reference.window_transform(halo_window))
+    slope_note_halo = classify_ibge_slope(slope_percent, valid_halo)
+    row_start = int(window.row_off - halo_window.row_off)
+    col_start = int(window.col_off - halo_window.col_off)
+    row_stop = row_start + int(window.height)
+    col_stop = col_start + int(window.width)
+    return (
+        slope_note_halo[row_start:row_stop, col_start:col_stop],
+        valid_halo[row_start:row_stop, col_start:col_stop],
+    )
+
+
+def reproject_raster_dataset_to_window(
+    src: DatasetReader,
+    reference: DatasetReader,
+    window: Window,
+    *,
+    resampling: Resampling,
+    dtype: str,
+    src_nodata: Optional[float] = None,
+    dst_nodata: float = 0.0,
+) -> np.ndarray:
+    dst = np.full((int(window.height), int(window.width)), dst_nodata, dtype=dtype)
+    reproject(
+        source=rasterio.band(src, 1),
+        destination=dst,
+        src_transform=src.transform,
+        src_crs=src.crs,
+        src_nodata=src_nodata if src_nodata is not None else src.nodata,
+        dst_transform=reference.window_transform(window),
+        dst_crs=reference.crs,
+        dst_nodata=dst_nodata,
+        resampling=resampling,
+    )
+    return dst
+
+
 def reproject_raster_to_reference(
     src_path_or_url: str | Path,
     reference: DatasetReader,
@@ -512,6 +667,21 @@ def classify_pluviosity(rain_mm: np.ndarray, valid: np.ndarray) -> np.ndarray:
     return note
 
 
+def score_pluviosity_continuous(rain_mm: np.ndarray, valid: np.ndarray) -> np.ndarray:
+    note = np.zeros(rain_mm.shape, dtype=np.float32)
+    finite = np.isfinite(rain_mm) & valid
+    if np.any(finite):
+        note[finite] = np.interp(
+            rain_mm[finite],
+            [400.0, 1000.0, 1500.0, 2000.0, 2500.0, 4300.0],
+            [4.0, 6.0, 8.0, 9.0, 10.0, 10.0],
+            left=0.0,
+            right=0.0,
+        ).astype(np.float32)
+    note[~valid] = 0.0
+    return note
+
+
 def map_mapbiomas_to_ibge_notes(raw: np.ndarray, valid: np.ndarray) -> Tuple[np.ndarray, List[int]]:
     notes = np.zeros(raw.shape, dtype=np.float32)
     unknown = []
@@ -581,6 +751,28 @@ def ibge_land_use_source_metadata() -> Dict[str, Any]:
     }
 
 
+def ibge_land_use_source_descriptor() -> Tuple[Any, Mapping[int, float], Dict[str, Any], str, str, str]:
+    custom_lulc = custom_lulc_output_path()
+    if custom_lulc.exists():
+        mapping = custom_lulc_land_use_mapping()
+        return (
+            custom_lulc,
+            mapping,
+            ibge_land_use_source_metadata(),
+            "ibge_land_use_custom_lulc.tif",
+            "Custom polygon-trained LULC reprojected by nearest neighbor",
+            "custom",
+        )
+    return (
+        MAPBIOMAS_10M_2023_URL,
+        MAPBIOMAS_IBGE_LAND_USE_NOTES,
+        ibge_land_use_source_metadata(),
+        "ibge_land_use_mapbiomas_2023.tif",
+        "MapBiomas 10m 2023 class reprojected by nearest neighbor",
+        "mapbiomas",
+    )
+
+
 def load_ibge_land_use(
     reference: DatasetReader, valid: np.ndarray
 ) -> Tuple[np.ndarray, np.ndarray, List[int], Dict[str, Any], str, str]:
@@ -638,122 +830,284 @@ def classify_ibge_final(score_1_to_10: np.ndarray, valid: np.ndarray) -> Tuple[n
 
 
 def generate_ibge_method(reference: DatasetReader, dirs: MethodDirs) -> Dict[str, Any]:
-    dtm_valid = reference_valid_mask(reference)
-    _slope_deg, slope_percent = terrain_slope_on_reference(reference, resolution_m=10.0)
-    slope_note = classify_ibge_slope(slope_percent, dtm_valid)
-    del slope_percent
+    print(
+        "[three-methods][IBGE] Preparing high-resolution adapted inputs "
+        f"on {reference.width}x{reference.height} grid at {reference.res[0]:.3f} m.",
+        flush=True,
+    )
+    themes = {
+        "geomorphology": prepare_vector_theme_for_reference(
+            SIG_PATHS["relief"],
+            reference,
+            name="GEM",
+            label="Geomorphology proxy",
+            field="Classe",
+            mapping=RELIEF_IBGE_NOTES,
+            source_role="Local higher-resolution relief-pattern proxy for IBGE BDIA geomorphology.",
+        ),
+        "geology": prepare_vector_theme_for_reference(
+            SIG_PATHS["geology"],
+            reference,
+            name="GEO",
+            label="Geology proxy",
+            field="SIGLA_UNID",
+            mapping=GEOLOGY_IBGE_NOTES,
+            source_role="Local higher-resolution SIG/SGB geology proxy for IBGE BDIA geology.",
+        ),
+        "pedology": prepare_vector_theme_for_reference(
+            SIG_PATHS["pedology"],
+            reference,
+            name="PED",
+            label="Pedology proxy",
+            field="DESC_",
+            mapping=PEDOLOGY_IBGE_NOTES,
+            source_role="Local higher-resolution pedology proxy for IBGE BDIA pedology.",
+        ),
+    }
+    land_source_path, land_mapping, land_use_source, land_use_output_name, land_use_description, land_kind = (
+        ibge_land_use_source_descriptor()
+    )
 
-    relief_note, relief_meta = rasterize_vector_values(
-        SIG_PATHS["relief"],
-        reference,
-        field="Classe",
-        mapping=RELIEF_IBGE_NOTES,
-    )
-    geology_note, geology_meta = rasterize_vector_values(
-        SIG_PATHS["geology"],
-        reference,
-        field="SIGLA_UNID",
-        mapping=GEOLOGY_IBGE_NOTES,
-    )
-    pedology_note, pedology_meta = rasterize_vector_values(
-        SIG_PATHS["pedology"],
-        reference,
-        field="DESC_",
-        mapping=PEDOLOGY_IBGE_NOTES,
-    )
+    output_specs = {
+        "slope": (
+            "ibge_note_slope.tif",
+            "float32",
+            0.0,
+            "DECL note from drone DTM slope percent on the 16 cm grid",
+        ),
+        "geomorphology": (
+            "ibge_note_geomorphology.tif",
+            "float32",
+            0.0,
+            "GEM note from local relief-pattern proxy rasterized on the 16 cm grid",
+        ),
+        "geology": (
+            "ibge_note_geology.tif",
+            "float32",
+            0.0,
+            "GEO note from local geology proxy rasterized on the 16 cm grid",
+        ),
+        "pedology": (
+            "ibge_note_pedology.tif",
+            "float32",
+            0.0,
+            "PED note from local pedology proxy rasterized on the 16 cm grid",
+        ),
+        "land_use": (
+            "ibge_note_land_use_vegetation.tif",
+            "float32",
+            0.0,
+            "USOVEG note from the selected LULC source on the 16 cm grid",
+        ),
+        "pluviosity": (
+            "ibge_note_pluviosity.tif",
+            "float32",
+            0.0,
+            "PLUV continuous adapted note from CPRM/SGB PMA rainfall on the 16 cm grid",
+        ),
+        "pluviosity_mm": (
+            "ibge_pluviosity_pma_mm.tif",
+            "float32",
+            0.0,
+            "CPRM/SGB annual mean precipitation in mm reprojected to the 16 cm grid",
+        ),
+        "score_1to10": (
+            "ibge_susceptibility_score_1to10.tif",
+            "float32",
+            -9999.0,
+            "IBGE high-resolution adapted weighted susceptibility score on the 1-10 scale",
+        ),
+        "score_norm": (
+            "ibge_susceptibility_score.tif",
+            "float32",
+            -9999.0,
+            "IBGE high-resolution adapted weighted susceptibility score normalized to 0-1",
+        ),
+        "class5": (
+            "ibge_class_map_5class.tif",
+            "uint8",
+            255,
+            "IBGE high-resolution adapted classes: 1 very low to 5 very high",
+        ),
+        "class3": (
+            "ibge_class_map_3class.tif",
+            "uint8",
+            255,
+            "IBGE high-resolution adapted classes collapsed to 1 low, 2 medium, 3 high",
+        ),
+        "valid": (
+            "ibge_valid_mask.tif",
+            "uint8",
+            0,
+            "Valid pixels for the IBGE high-resolution adapted method",
+        ),
+        "land_use_raw": (
+            land_use_output_name,
+            "uint8",
+            0,
+            land_use_description,
+        ),
+    }
 
-    rain = reproject_raster_to_reference(
-        SIG_PATHS["rain_pma2"],
-        reference,
-        resampling=Resampling.bilinear,
-        dtype="float32",
-        dst_nodata=0.0,
-    )
-    pluviosity_note = classify_pluviosity(rain, dtm_valid)
-    del rain
+    total_pixels = int(reference.width * reference.height)
+    dtm_valid_pixels = 0
+    valid_pixels = 0
+    score_min = math.inf
+    score_max = -math.inf
+    class5_counts: Counter[int] = Counter()
+    class3_counts: Counter[int] = Counter()
+    land_use_classes: set[int] = set()
+    theme_pixel_stats = {
+        key: {"valid_note_pixels": 0, "zero_or_excluded_pixels_on_valid_dtm": 0}
+        for key in ("slope", "geomorphology", "geology", "pedology", "land_use", "pluviosity")
+    }
 
-    (
-        land_use_raw,
-        land_use_note,
-        unknown_land_use,
-        land_use_source,
-        land_use_output_name,
-        land_use_description,
-    ) = load_ibge_land_use(reference, dtm_valid)
-    if unknown_land_use:
-        raise RuntimeError(
-            "The selected IBGE land-use source returned unmapped classes inside "
-            f"the drone bbox: {unknown_land_use}. Add real class mappings before "
-            "generating IBGE output."
+    def update_theme_stats(name: str, note: np.ndarray, dtm_valid: np.ndarray) -> None:
+        theme_pixel_stats[name]["valid_note_pixels"] += int(np.count_nonzero((note > 0) & dtm_valid))
+        theme_pixel_stats[name]["zero_or_excluded_pixels_on_valid_dtm"] += int(
+            np.count_nonzero((note <= 0) & dtm_valid)
         )
 
-    valid = (
-        dtm_valid
-        & (slope_note > 0)
-        & (relief_note > 0)
-        & (geology_note > 0)
-        & (pedology_note > 0)
-        & (land_use_note > 0)
-        & (pluviosity_note > 0)
+    tiles_x = int(math.ceil(reference.width / IBGE_ADAPTED_TILE_SIZE))
+    tiles_y = int(math.ceil(reference.height / IBGE_ADAPTED_TILE_SIZE))
+    total_tiles = tiles_x * tiles_y
+    print(
+        f"[three-methods][IBGE] Writing {len(output_specs)} raster products in "
+        f"{total_tiles} tiles of up to {IBGE_ADAPTED_TILE_SIZE}px.",
+        flush=True,
     )
 
-    score = (
-        slope_note * IBGE_WEIGHTS["slope"]
-        + relief_note * IBGE_WEIGHTS["geomorphology"]
-        + geology_note * IBGE_WEIGHTS["geology"]
-        + pedology_note * IBGE_WEIGHTS["pedology"]
-        + land_use_note * IBGE_WEIGHTS["land_use"]
-        + pluviosity_note * IBGE_WEIGHTS["pluviosity"]
-    ).astype(np.float32)
-    score[~valid] = -9999.0
-    susceptibility = np.where(valid, score / 10.0, -9999.0).astype(np.float32)
-    class5, class3 = classify_ibge_final(score, valid)
+    with ExitStack() as stack:
+        writers = {}
+        for key, (filename, dtype, nodata, description) in output_specs.items():
+            path = dirs.outputs / filename
+            path.parent.mkdir(parents=True, exist_ok=True)
+            writer = stack.enter_context(
+                rasterio.open(
+                    path,
+                    "w",
+                    **output_profile(reference, count=1, dtype=dtype, nodata=nodata),
+                )
+            )
+            writer.set_band_description(1, description)
+            writers[key] = writer
 
-    write_single_band(
-        dirs.outputs / "ibge_susceptibility_score.tif",
-        susceptibility,
-        reference,
-        dtype="float32",
-        nodata=-9999.0,
-        description="IBGE adapted weighted susceptibility score 0-1",
-    )
-    write_single_band(
-        dirs.outputs / "ibge_class_map_5class.tif",
-        class5,
-        reference,
-        dtype="uint8",
-        nodata=255,
-        description="IBGE adapted classes: 1 very low to 5 very high",
-    )
-    write_single_band(
-        dirs.outputs / "ibge_class_map_3class.tif",
-        class3,
-        reference,
-        dtype="uint8",
-        nodata=255,
-        description="IBGE adapted classes collapsed to 1 low, 2 medium, 3 high",
-    )
-    write_single_band(
-        dirs.outputs / "ibge_valid_mask.tif",
-        valid.astype(np.uint8),
-        reference,
-        dtype="uint8",
-        nodata=0,
-        description="Valid pixels for IBGE adapted method",
-    )
-    write_single_band(
-        dirs.outputs / land_use_output_name,
-        land_use_raw,
-        reference,
-        dtype="uint8",
-        nodata=0,
-        description=land_use_description,
-    )
+        stack.enter_context(rasterio.Env(CPL_VSIL_CURL_ALLOWED_EXTENSIONS=".tif"))
+        rain_src = stack.enter_context(rasterio.open(SIG_PATHS["rain_pma2"]))
+        land_src = stack.enter_context(rasterio.open(land_source_path))
+
+        for tile_idx, window in enumerate(iter_grid_windows(reference, IBGE_ADAPTED_TILE_SIZE), start=1):
+            print(
+                "[three-methods][IBGE] "
+                f"tile {tile_idx}/{total_tiles} "
+                f"row={int(window.row_off)} col={int(window.col_off)} "
+                f"size={int(window.width)}x{int(window.height)}",
+                flush=True,
+            )
+            slope_note, dtm_valid = slope_note_and_valid_window(reference, window)
+            geomorphology_note = rasterize_prepared_theme_window(
+                themes["geomorphology"], reference, window
+            )
+            geology_note = rasterize_prepared_theme_window(themes["geology"], reference, window)
+            pedology_note = rasterize_prepared_theme_window(themes["pedology"], reference, window)
+            rain = reproject_raster_dataset_to_window(
+                rain_src,
+                reference,
+                window,
+                resampling=Resampling.bilinear,
+                dtype="float32",
+                dst_nodata=0.0,
+            )
+            pluviosity_note = score_pluviosity_continuous(rain, dtm_valid)
+            land_use_raw = reproject_raster_dataset_to_window(
+                land_src,
+                reference,
+                window,
+                resampling=Resampling.nearest,
+                dtype="uint8",
+                dst_nodata=0,
+            )
+            if land_kind == "custom":
+                land_use_note, unknown_land_use = map_custom_lulc_to_ibge_notes(
+                    land_use_raw, dtm_valid, land_mapping
+                )
+            else:
+                land_use_note, unknown_land_use = map_mapbiomas_to_ibge_notes(
+                    land_use_raw, dtm_valid
+                )
+            if unknown_land_use:
+                raise RuntimeError(
+                    "The selected IBGE land-use source returned unmapped classes inside "
+                    f"tile row={int(window.row_off)} col={int(window.col_off)}: "
+                    f"{unknown_land_use}. Add real class mappings before generating IBGE output."
+                )
+
+            valid = (
+                dtm_valid
+                & (slope_note > 0)
+                & (geomorphology_note > 0)
+                & (geology_note > 0)
+                & (pedology_note > 0)
+                & (land_use_note > 0)
+                & (pluviosity_note > 0)
+            )
+            score = (
+                slope_note * IBGE_WEIGHTS["slope"]
+                + geomorphology_note * IBGE_WEIGHTS["geomorphology"]
+                + geology_note * IBGE_WEIGHTS["geology"]
+                + pedology_note * IBGE_WEIGHTS["pedology"]
+                + land_use_note * IBGE_WEIGHTS["land_use"]
+                + pluviosity_note * IBGE_WEIGHTS["pluviosity"]
+            ).astype(np.float32)
+            score_1to10 = np.where(valid, score, -9999.0).astype(np.float32)
+            score_norm = np.where(valid, score / 10.0, -9999.0).astype(np.float32)
+            class5, class3 = classify_ibge_final(score, valid)
+
+            writers["slope"].write(slope_note.astype("float32"), 1, window=window)
+            writers["geomorphology"].write(geomorphology_note.astype("float32"), 1, window=window)
+            writers["geology"].write(geology_note.astype("float32"), 1, window=window)
+            writers["pedology"].write(pedology_note.astype("float32"), 1, window=window)
+            writers["land_use"].write(land_use_note.astype("float32"), 1, window=window)
+            writers["pluviosity"].write(pluviosity_note.astype("float32"), 1, window=window)
+            writers["pluviosity_mm"].write(np.where(dtm_valid, rain, 0.0).astype("float32"), 1, window=window)
+            writers["score_1to10"].write(score_1to10, 1, window=window)
+            writers["score_norm"].write(score_norm, 1, window=window)
+            writers["class5"].write(class5, 1, window=window)
+            writers["class3"].write(class3, 1, window=window)
+            writers["valid"].write(valid.astype("uint8"), 1, window=window)
+            writers["land_use_raw"].write(land_use_raw.astype("uint8"), 1, window=window)
+
+            dtm_valid_pixels += int(np.count_nonzero(dtm_valid))
+            valid_pixels += int(np.count_nonzero(valid))
+            if np.any(valid):
+                valid_scores = score[valid]
+                score_min = min(score_min, float(valid_scores.min()))
+                score_max = max(score_max, float(valid_scores.max()))
+            for value, count in zip(*np.unique(class5, return_counts=True)):
+                class5_counts[int(value)] += int(count)
+            for value, count in zip(*np.unique(class3, return_counts=True)):
+                class3_counts[int(value)] += int(count)
+            for value in np.unique(land_use_raw):
+                if int(value) != 0:
+                    land_use_classes.add(int(value))
+
+            update_theme_stats("slope", slope_note, dtm_valid)
+            update_theme_stats("geomorphology", geomorphology_note, dtm_valid)
+            update_theme_stats("geology", geology_note, dtm_valid)
+            update_theme_stats("pedology", pedology_note, dtm_valid)
+            update_theme_stats("land_use", land_use_note, dtm_valid)
+            update_theme_stats("pluviosity", pluviosity_note, dtm_valid)
 
     config = {
-        "method": "High-resolution local adaptation of IBGE weighted susceptibility",
+        "method": "IBGE high-resolution adapted weighted susceptibility",
+        "compliance_mode": "adapted_high_resolution_16cm",
         "reference_grid": reference_summary(reference),
         "weights": IBGE_WEIGHTS,
+        "grid_substitution": {
+            "strict_ibge_grid": "IBGE Grade Estatistica 1 km x 1 km",
+            "adapted_grid": "Drone DTM reference grid at 16 cm",
+            "algebra": "Pixel-wise weighted map algebra on the 16 cm reference grid",
+        },
         "slope_classes_percent_to_note": [
             [0, 3, 1],
             [3, 8, 3],
@@ -763,33 +1117,79 @@ def generate_ibge_method(reference: DatasetReader, dirs: MethodDirs) -> Dict[str
             [75, None, 10],
         ],
         "classification_breaks_1_to_10": [0, 3.5, 4.5, 5.5, 6.5, 10],
-        "land_use_source": land_use_source,
-        "terrain_analysis_resolution_m": 10.0,
+        "tile_processing": {
+            "tile_size_pixels": IBGE_ADAPTED_TILE_SIZE,
+            "slope_halo_pixels": IBGE_SLOPE_HALO_PIXELS,
+            "categorical_resampling": "nearest",
+            "continuous_resampling_before_classification": "bilinear",
+            "adapted_pluviosity_scoring": (
+                "Continuous interpolation through the IBGE rainfall thresholds to preserve "
+                "subclass variation on the 16 cm high-resolution grid."
+            ),
+        },
+        "input_proxies": {
+            "DECL": {
+                "source": "Drone DTM",
+                "path": str(DRONE_DTM),
+                "role": "Higher-resolution substitute for SRTM/CGIAR-CSI 90 m.",
+            },
+            "USOVEG": land_use_source,
+            "GEM": themes["geomorphology"].metadata,
+            "GEO": themes["geology"].metadata,
+            "PED": themes["pedology"].metadata,
+            "PLUV": {
+                "source": "CPRM/SGB Atlas Pluviometrico annual mean precipitation",
+                "path": str(SIG_PATHS["rain_pma2"]),
+                "role": (
+                    "IBGE-compatible rainfall input, resampled bilinearly and converted to "
+                    "a continuous adapted note through the IBGE rainfall thresholds."
+                ),
+            },
+        },
         "note": (
-            "This is not the strict national IBGE 1 km statistical-grid product; "
-            "it applies the IBGE thematic scoring logic on the drone footprint. "
-            "Slope is derived from the real drone DTM on a 10 m analysis grid to "
-            "avoid centimeter-scale surface roughness dominating the IBGE weights."
+            "This is an IBGE-compliant high-resolution adaptation, not the strict national "
+            "1 km statistical-grid product. The IBGE weights, thematic notes and class "
+            "breaks are retained, but the 1 km grade is deliberately replaced by the "
+            "16 cm drone DTM grid. Drone-derived DTM and custom deep-learning LULC are "
+            "used as higher-resolution substitutes where available."
         ),
     }
     write_json(dirs.configs / "method_config.json", config)
 
+    if valid_pixels == 0:
+        score_min = -9999.0
+        score_max = -9999.0
+    current_outputs = sorted(
+        str((dirs.outputs / spec[0]).relative_to(ROOT)) for spec in output_specs.values()
+    )
     summary = {
-        "outputs": output_listing(dirs.outputs),
-        "valid_fraction": fraction(valid),
+        "outputs": current_outputs,
+        "valid_fraction": float(valid_pixels / total_pixels) if total_pixels else 0.0,
+        "dtm_valid_fraction": float(dtm_valid_pixels / total_pixels) if total_pixels else 0.0,
+        "score_1_to_10_min": float(score_min),
+        "score_1_to_10_max": float(score_max),
         "theme_metadata": {
-            "relief": relief_meta,
-            "geology": geology_meta,
-            "pedology": pedology_meta,
+            "slope": config["input_proxies"]["DECL"],
+            "geomorphology": themes["geomorphology"].metadata,
+            "geology": themes["geology"].metadata,
+            "pedology": themes["pedology"].metadata,
             "land_use": land_use_source,
-            "land_use_classes": sorted(int(x) for x in np.unique(land_use_raw) if int(x) != 0),
+            "land_use_classes": sorted(land_use_classes),
+            "pluviosity": config["input_proxies"]["PLUV"],
         },
-        "class_distribution": class_distribution(class3, reference),
+        "theme_pixel_stats": theme_pixel_stats,
+        "class_distribution_5class": class_distribution_from_counts(class5_counts, reference),
+        "class_distribution": class_distribution_from_counts(class3_counts, reference),
     }
     write_json(dirs.reports / "summary.json", summary)
     write_method_report(
         dirs.reports / "method_report.md",
-        "IBGE Adapted Method",
+        "IBGE High-Resolution Adapted Method",
+        config,
+        summary,
+    )
+    write_ibge_adapted_compliance_report(
+        dirs.reports / "compliance_adapted.md",
         config,
         summary,
     )
@@ -837,6 +1237,27 @@ def class_distribution(class_map: np.ndarray, reference: DatasetReader) -> Dict[
     return result
 
 
+def class_distribution_from_counts(
+    counts: Mapping[int, int],
+    reference: DatasetReader,
+    *,
+    nodata: int = 255,
+) -> Dict[str, Any]:
+    pixel_area = area_per_pixel(reference)
+    total_pixels = int(sum(count for cls, count in counts.items() if int(cls) != nodata))
+    total_area = float(total_pixels * pixel_area)
+    result: Dict[str, Any] = {"total_valid_area_m2": total_area, "classes": {}}
+    for cls in sorted(int(value) for value in counts if int(value) != nodata):
+        pixels = int(counts.get(cls, 0))
+        area = float(pixels * pixel_area)
+        result["classes"][str(cls)] = {
+            "pixels": pixels,
+            "area_m2": area,
+            "fraction": float(area / total_area) if total_area else 0.0,
+        }
+    return result
+
+
 def write_method_report(
     path: Path,
     title: str,
@@ -863,6 +1284,57 @@ def write_method_report(
         ]
     )
     write_text(path, "\n".join(content))
+
+
+def write_ibge_adapted_compliance_report(
+    path: Path,
+    config: Mapping[str, Any],
+    summary: Mapping[str, Any],
+) -> None:
+    proxies = config.get("input_proxies", {})
+    stats = summary.get("theme_pixel_stats", {})
+    lines = [
+        "# IBGE High-Resolution Adapted Compliance Report",
+        "",
+        "This product keeps the IBGE thematic weights, note scale and final class breaks, "
+        "but deliberately replaces the national 1 km statistical grid with the 16 cm "
+        "drone DTM grid. Rainfall keeps the IBGE threshold anchors but is scored "
+        "continuously between them so the high-resolution adapted product does not "
+        "discard real PMA variation inside a broad national class.",
+        "",
+        "## Grid and Algebra",
+        f"- Compliance mode: `{config.get('compliance_mode')}`",
+        f"- Adapted grid: `{config.get('grid_substitution', {}).get('adapted_grid')}`",
+        f"- Algebra: `{config.get('grid_substitution', {}).get('algebra')}`",
+        "",
+        "## Theme Inputs",
+    ]
+    for key in ("DECL", "USOVEG", "GEM", "GEO", "PED", "PLUV"):
+        payload = proxies.get(key, {})
+        source = payload.get("source", payload.get("label", "unknown"))
+        path_value = payload.get("path", payload.get("url", ""))
+        role = payload.get("role", payload.get("source_role", ""))
+        lines.append(f"- `{key}`: {source}; `{path_value}`; {role}")
+
+    lines.extend(["", "## Pixel Coverage"])
+    for key in ("slope", "land_use", "geomorphology", "geology", "pedology", "pluviosity"):
+        payload = stats.get(key, {})
+        valid = int(payload.get("valid_note_pixels", 0))
+        zero = int(payload.get("zero_or_excluded_pixels_on_valid_dtm", 0))
+        lines.append(f"- `{key}`: valid-note pixels={valid}; zero/excluded on valid DTM={zero}")
+
+    lines.extend(
+        [
+            "",
+            "## Final Outputs",
+            f"- Valid fraction: `{summary.get('valid_fraction', 0.0):.6f}`",
+            f"- Score range 1-10: `{summary.get('score_1_to_10_min')}` to `{summary.get('score_1_to_10_max')}`",
+            "",
+            "See `summary.json`, `method_config.json`, and `provenance.json` for full machine-readable metadata.",
+            "",
+        ]
+    )
+    write_text(path, "\n".join(lines))
 
 
 def copy_or_reproject_dl_outputs(reference: DatasetReader, dirs: MethodDirs) -> Dict[str, Any]:
@@ -1387,6 +1859,16 @@ def write_provenance(reference: DatasetReader, dirs: Dict[str, MethodDirs], vali
         "source_layers": {key: str(path) for key, path in SIG_PATHS.items()},
         "ground_truth_25m": str(GROUND_TRUTH_25M),
         "land_use": ibge_land_use_source_metadata(),
+        "ibge_high_resolution_adaptation": {
+            "compliance_mode": "adapted_high_resolution_16cm",
+            "strict_grid_replaced": "IBGE Grade Estatistica 1 km x 1 km",
+            "adapted_grid": "Drone DTM grid at 16 cm",
+            "algebra": "Pixel-wise weighted IBGE map algebra on the 16 cm grid",
+            "proxy_policy": (
+                "Use higher-resolution local proxies when they are compatible and "
+                "document the substitution in IBGE_method reports."
+            ),
+        },
         "official_references": {
             "ibge_susceptibility": "https://biblioteca.ibge.gov.br/index.php/biblioteca-catalogo?id=2101684&view=detalhes",
             "ibge_pedology_complement": "https://biblioteca.ibge.gov.br/index.php/biblioteca-catalogo?id=2102076&view=detalhes",
@@ -1413,15 +1895,15 @@ def run(force: bool = False) -> Dict[str, Any]:
     dirs = ensure_method_dirs()
     with rasterio.open(DRONE_DTM) as reference:
         if not force and all((group.reports / "summary.json").exists() for group in dirs.values()):
-            print("Three-method outputs already exist; use --force to regenerate.")
+            print("Three-method outputs already exist; use --force to regenerate.", flush=True)
         else:
-            print("[three-methods] Generating DL method package...")
+            print("[three-methods] Generating DL method package...", flush=True)
             dl_summary = copy_or_reproject_dl_outputs(reference, dirs["dl"])
-            print("[three-methods] Generating IBGE adapted method...")
+            print("[three-methods] Generating IBGE adapted method...", flush=True)
             ibge_summary = generate_ibge_method(reference, dirs["ibge"])
-            print("[three-methods] Generating SGB-style method...")
+            print("[three-methods] Generating SGB-style method...", flush=True)
             sgb_summary = generate_sgb_method(reference, dirs["sgb"])
-            print("[three-methods] Validating methods against real references...")
+            print("[three-methods] Validating methods against real references...", flush=True)
             validation = validate_methods(reference, dirs)
             write_provenance(reference, dirs, validation)
             return {
