@@ -48,8 +48,8 @@ THEME_RASTERS = {
 
 DISCRETE_COLORS = {
     "lulc": {
-        0: (222, 226, 230),
-        1: (203, 82, 64),
+        0: (245, 247, 250),
+        1: (188, 32, 111),
         2: (210, 180, 91),
         3: (64, 135, 194),
         4: (133, 180, 84),
@@ -90,7 +90,13 @@ def rel(path: Path) -> str:
     return path.relative_to(WEBSITE).as_posix()
 
 
-def raster_sample(path: Path, *, max_size: int = 1300, nearest: bool = False) -> Tuple[np.ndarray, np.ndarray]:
+def raster_sample(
+    path: Path,
+    *,
+    max_size: int = 1300,
+    nearest: bool = False,
+    mask_path: Optional[Path] = None,
+) -> Tuple[np.ndarray, np.ndarray]:
     with rasterio.open(path) as src:
         scale = max(src.width / max_size, src.height / max_size, 1.0)
         width = max(1, int(round(src.width / scale)))
@@ -103,6 +109,20 @@ def raster_sample(path: Path, *, max_size: int = 1300, nearest: bool = False) ->
         )
     arr = np.asarray(data.astype(np.float32).filled(np.nan), dtype=np.float32)
     mask = ~np.ma.getmaskarray(data)
+    if mask_path is not None:
+        with rasterio.open(mask_path) as mask_src:
+            mask_data = mask_src.read(
+                1,
+                out_shape=arr.shape,
+                masked=True,
+                resampling=Resampling.nearest,
+            )
+            mask_nodata = mask_src.nodata
+        mask_arr = np.asarray(mask_data.astype(np.float32).filled(np.nan), dtype=np.float32)
+        mask_valid = ~np.ma.getmaskarray(mask_data) & np.isfinite(mask_arr)
+        if mask_nodata is not None:
+            mask_valid &= mask_arr != float(mask_nodata)
+        mask &= mask_valid
     return arr, mask
 
 
@@ -153,14 +173,14 @@ def save_png(path: Path, rgba: np.ndarray) -> None:
 def make_thumbnails() -> Dict[str, str]:
     outputs: Dict[str, str] = {}
     specs = {
-        "dtm": ("thumb_dtm.jpg", "terrain", None, None, False),
+        "dtm": ("thumb_dtm.jpg", "gray", None, None, False),
         "slope": ("thumb_slope.jpg", "magma", 0.0, 10.0, False),
         "geology": ("thumb_geology.jpg", "viridis", 0.0, 10.0, True),
         "pedology": ("thumb_pedology.jpg", "viridis", 0.0, 10.0, True),
         "geomorphology": ("thumb_geomorphology.jpg", "viridis", 0.0, 10.0, True),
         "pluviosity": ("thumb_pluviosity.jpg", "viridis", 0.0, 10.0, False),
         "pluviosity_mm": ("thumb_pluviosity_mm.jpg", "Blues", None, None, False),
-        "score": ("thumb_score.jpg", "turbo", 0.0, 10.0, False),
+        "score": ("thumb_score.jpg", "viridis", 0.0, 10.0, False),
     }
     for key, (filename, cmap, vmin, vmax, nearest) in specs.items():
         data, mask = raster_sample(THEME_RASTERS[key], nearest=nearest)
@@ -169,7 +189,11 @@ def make_thumbnails() -> Dict[str, str]:
         outputs[key] = rel(out)
 
     for key, filename in [("lulc", "thumb_lulc.jpg"), ("class5", "thumb_class5.jpg"), ("valid", "thumb_valid.jpg")]:
-        data, mask = raster_sample(THEME_RASTERS[key], nearest=True)
+        data, mask = raster_sample(
+            THEME_RASTERS[key],
+            nearest=True,
+            mask_path=FINAL_DTM if key == "lulc" else None,
+        )
         out = ASSETS / filename
         save_jpeg(out, discrete_rgb(data, mask, DISCRETE_COLORS[key]))
         outputs[key] = rel(out)
@@ -181,7 +205,7 @@ def make_thumbnails() -> Dict[str, str]:
 def make_webviewer_asset() -> Dict[str, Any]:
     data, mask = raster_sample(THEME_RASTERS["score"], max_size=1800, nearest=False)
     valid = mask & np.isfinite(data) & (data != -9999)
-    rgb = continuous_rgb(data, valid, cmap_name="turbo", vmin=0.0, vmax=10.0)
+    rgb = continuous_rgb(data, valid, cmap_name="viridis", vmin=0.0, vmax=10.0)
     alpha = np.where(valid, 215, 0).astype(np.uint8)
     rgba = np.dstack([rgb, alpha])
     image_path = ASSETS / "webviewer_score.png"
@@ -397,21 +421,56 @@ def build_html(config: Mapping[str, Any], summary: Mapping[str, Any], thumbs: Ma
         "geology": section(
             "Geologia",
             thumbs["geology"],
-            "<p>Proxy adaptado: o campo <code>SIGLA_UNID</code> da camada local de geologia é transformado diretamente em nota GEO.</p>",
+            (
+                "<p>Proxy adaptado: a metodologia IBGE estrita calcula GEO a partir da média de "
+                "litologia, gênese, província estrutural e subprovíncia estrutural. Nesta versão "
+                "de alta resolução não há, no recorte operacional, a tabela BDIA completa com esses "
+                "quatro componentes normalizados para cada polígono. Por isso, a camada local de "
+                "geologia é usada como proxy compatível.</p>"
+                "<p>O campo <code>SIGLA_UNID</code> identifica a unidade geológica dominante. Cada "
+                "unidade foi convertida diretamente para uma nota GEO 1-10 já interpretada para "
+                "potencialidade a movimentos de massa. No recorte atual, apenas a unidade "
+                "<code>PRps</code> intercepta a área válida do DTM, resultando em nota geológica "
+                "espacialmente constante. Isso não indica falha de rasterização; indica limitação "
+                "da variabilidade geológica disponível dentro desta área de estudo.</p>"
+            ),
             mapping_table(geo_rows, ["SIGLA_UNID", "Nota GEO"]),
             stats_table(stats["geology"]),
         ),
         "pedology": section(
             "Pedologia",
             thumbs["pedology"],
-            "<p>Proxy adaptado: o campo <code>DESC_</code> da camada local de pedologia é transformado diretamente em nota PED.</p>",
+            (
+                "<p>Proxy adaptado: na metodologia IBGE estrita, PED é calculado como "
+                "<code>max(PROF, TEXT, RELTEXT)</code>, considerando o solo dominante e atributos "
+                "pedológicos como profundidade, textura e relação/gradiente textural. A camada "
+                "local disponível para esta área não expõe todos esses campos analíticos de forma "
+                "compatível com a tabela BDIA/pedologia completa.</p>"
+                "<p>Assim, o campo <code>DESC_</code> foi usado como legenda pedológica operacional. "
+                "Cada legenda recebeu uma nota PED proxy. No recorte válido, a classe dominante é "
+                "<code>PEe1</code>, mapeada para nota 8, enquanto <code>Rios</code> recebe 0 e é "
+                "excluído da máscara válida. Portanto, a baixa variação pedológica no produto final "
+                "decorre da resolução temática e da legenda disponível, não de simplificação no grid "
+                "de 16 cm.</p>"
+            ),
             mapping_table(ped_rows, ["DESC_", "Nota PED"]),
             stats_table(stats["pedology"]),
         ),
         "geomorphology": section(
             "Geomorfologia",
             thumbs["geomorphology"],
-            "<p>Proxy adaptado: o campo <code>Classe</code> de padrões de relevo substitui os modelados geomorfológicos BDIA.</p>",
+            (
+                "<p>Proxy adaptado: a metodologia IBGE estrita usa modelados geomorfológicos BDIA, "
+                "especialmente a quarta ordem taxonômica, para diferenciar acumulação, dissecação, "
+                "dissolução e aplanamento. Nesta adaptação, a camada local de padrões de relevo foi "
+                "usada como substituta de maior compatibilidade espacial com o estudo.</p>"
+                "<p>O campo <code>Classe</code> representa formas de relevo como planícies, colinas, "
+                "morros baixos e morros altos. A transformação segue a lógica geomorfológica do IBGE: "
+                "ambientes deposicionais/planos recebem notas menores, formas intermediárias recebem "
+                "notas médias e relevo mais dissecado/íngreme recebe notas altas. Diferentemente da "
+                "geologia e da pedologia, esta camada apresenta variação espacial relevante dentro "
+                "da área, contribuindo para contrastes locais no score final.</p>"
+            ),
             mapping_table(geom_rows, ["Classe", "Nota GEM"]),
             stats_table(stats["geomorphology"]),
         ),
@@ -444,11 +503,25 @@ def build_html(config: Mapping[str, Any], summary: Mapping[str, Any], thumbs: Ma
             f"<h3>Máscara válida</h3>{stats_table(stats['valid'], labels={0: 'Inválido', 1: 'Válido'})}<div class=\"figure inline\"><img src=\"{thumbs['valid']}\" alt=\"Máscara válida\"></div>",
         ),
         "webviewer": (
+            "<div class=\"viewer-shell\">"
+            "<aside class=\"viewer-panel\">"
             "<h2>webviewer</h2>"
-            "<p>Visualização interativa do score final 0-10. A imagem está em WGS84 e foi derivada de "
-            "<code>ibge_susceptibility_score_1to10.tif</code>.</p>"
-            "<div id=\"map\"></div>"
+            "<p>Score final 0-10 sobreposto ao mapa base. A imagem foi derivada de "
+            "<code>ibge_susceptibility_score_1to10.tif</code> e está registrada em WGS84.</p>"
+            "<h3>Mapa de fundo</h3>"
+            "<div class=\"map-controls\" role=\"group\" aria-label=\"Mapa de fundo\">"
+            "<button type=\"button\" class=\"base-button active\" data-base=\"osm\">OSM</button>"
+            "<button type=\"button\" class=\"base-button\" data-base=\"bing\">Bing imagem</button>"
+            "</div>"
+            "<h3>Camada IBGE</h3>"
+            "<label class=\"opacity-control\">Opacidade do score"
+            "<input id=\"score-opacity\" type=\"range\" min=\"0\" max=\"1\" step=\"0.05\" value=\"0.88\">"
+            "</label>"
             "<div class=\"legend\"><span>0</span><div class=\"ramp\"></div><span>10</span></div>"
+            "<p class=\"viewer-note\">Viridis: valores menores em roxo/azul e maiores em verde/amarelo.</p>"
+            "</aside>"
+            "<div class=\"map-wrap\"><div id=\"map\"></div></div>"
+            "</div>"
         ),
     }
     sections = "".join(
@@ -474,6 +547,9 @@ def build_html(config: Mapping[str, Any], summary: Mapping[str, Any], thumbs: Ma
     nav {{ display:flex; flex-wrap:wrap; gap:6px; padding:12px 32px; background:#e9eef4; border-bottom:1px solid var(--line); position:sticky; top:0; z-index:5; }}
     button.tab-button {{ border:1px solid #c8d2dc; background:white; color:#1b2a36; padding:9px 12px; border-radius:6px; cursor:pointer; font-size:14px; }}
     button.tab-button.active {{ background:var(--accent); color:white; border-color:var(--accent); }}
+    .map-controls {{ display:grid; grid-template-columns:1fr 1fr; gap:8px; margin:10px 0 12px; }}
+    .base-button {{ border:1px solid #c8d2dc; background:white; color:#1b2a36; padding:8px 12px; border-radius:6px; cursor:pointer; font-size:14px; }}
+    .base-button.active {{ background:#263b4a; color:white; border-color:#263b4a; }}
     main {{ padding:24px 32px 40px; }}
     .tab-panel {{ display:none; grid-template-columns:minmax(280px, 42%) minmax(320px, 1fr); gap:24px; align-items:start; }}
     .tab-panel.active {{ display:grid; }}
@@ -487,11 +563,18 @@ def build_html(config: Mapping[str, Any], summary: Mapping[str, Any], thumbs: Ma
     table {{ width:100%; border-collapse:collapse; margin:14px 0 18px; font-size:14px; }}
     th, td {{ text-align:left; border-bottom:1px solid var(--line); padding:8px 10px; vertical-align:top; }}
     th {{ background:#f0f4f8; color:#22313d; }}
-    #webviewer {{ grid-column:1 / -1; }}
-    #map {{ width:100%; height:72vh; min-height:520px; border:1px solid var(--line); border-radius:8px; }}
+    #webviewer {{ grid-column:1 / -1; background:transparent; border:0; padding:0; }}
+    .viewer-shell {{ display:grid; grid-template-columns:320px minmax(420px,1fr); gap:16px; align-items:stretch; }}
+    .viewer-panel {{ background:var(--panel); border:1px solid var(--line); border-radius:8px; padding:18px; }}
+    .viewer-panel p {{ margin-top:0; }}
+    .viewer-note {{ font-size:13px; }}
+    .opacity-control {{ display:grid; gap:8px; color:var(--muted); font-size:14px; margin:8px 0 14px; }}
+    .opacity-control input {{ width:100%; }}
+    .map-wrap {{ background:white; border:1px solid var(--line); border-radius:8px; padding:8px; }}
+    #map {{ width:100%; height:76vh; min-height:560px; border-radius:6px; }}
     .legend {{ display:flex; align-items:center; gap:10px; margin-top:10px; color:var(--muted); }}
-    .ramp {{ height:14px; width:280px; border-radius:999px; border:1px solid #c5cbd3; background:linear-gradient(90deg,#30123b,#4662d7,#35ab7e,#f9e721,#d93806); }}
-    @media (max-width:900px) {{ .tab-panel.active {{ display:block; }} .copy {{ margin-top:18px; }} nav, main, header {{ padding-left:16px; padding-right:16px; }} }}
+    .ramp {{ height:14px; width:280px; border-radius:999px; border:1px solid #c5cbd3; background:linear-gradient(90deg,#440154,#3b528b,#21918c,#5ec962,#fde725); }}
+    @media (max-width:900px) {{ .tab-panel.active {{ display:block; }} .copy {{ margin-top:18px; }} .viewer-shell {{ display:block; }} .map-wrap {{ margin-top:14px; }} nav, main, header {{ padding-left:16px; padding-right:16px; }} }}
   </style>
 </head>
 <body>
@@ -519,8 +602,29 @@ def build_html(config: Mapping[str, Any], summary: Mapping[str, Any], thumbs: Ma
       container: 'map',
       style: {{
         version: 8,
-        sources: {{}},
-        layers: [{{ id: 'background', type: 'background', paint: {{ 'background-color': '#eef3f7' }} }}]
+        sources: {{
+          osm: {{
+            type: 'raster',
+            tiles: ['https://tile.openstreetmap.org/{{z}}/{{x}}/{{y}}.png'],
+            tileSize: 256,
+            attribution: '© OpenStreetMap contributors'
+          }},
+          bing: {{
+            type: 'raster',
+            tiles: [
+              'https://ecn.t0.tiles.virtualearth.net/tiles/a{{quadkey}}.jpeg?g=129&mkt=pt-BR&n=z',
+              'https://ecn.t1.tiles.virtualearth.net/tiles/a{{quadkey}}.jpeg?g=129&mkt=pt-BR&n=z',
+              'https://ecn.t2.tiles.virtualearth.net/tiles/a{{quadkey}}.jpeg?g=129&mkt=pt-BR&n=z',
+              'https://ecn.t3.tiles.virtualearth.net/tiles/a{{quadkey}}.jpeg?g=129&mkt=pt-BR&n=z'
+            ],
+            tileSize: 256,
+            attribution: '© Microsoft Bing'
+          }}
+        }},
+        layers: [
+          {{ id: 'osm-base', type: 'raster', source: 'osm', layout: {{ visibility: 'visible' }} }},
+          {{ id: 'bing-base', type: 'raster', source: 'bing', layout: {{ visibility: 'none' }} }}
+        ]
       }},
       center: viewer.center,
       zoom: 14,
@@ -537,9 +641,21 @@ def build_html(config: Mapping[str, Any], summary: Mapping[str, Any], thumbs: Ma
         id: 'score-layer',
         type: 'raster',
         source: 'score',
-        paint: {{ 'raster-opacity': 0.92 }}
+        paint: {{ 'raster-opacity': 0.88 }}
       }});
       window.ibgeMap.fitBounds(viewer.bounds, {{ padding: 30, duration: 0 }});
+    }});
+    document.getElementById('score-opacity').addEventListener('input', (event) => {{
+      window.ibgeMap.setPaintProperty('score-layer', 'raster-opacity', Number(event.target.value));
+    }});
+    document.querySelectorAll('.base-button').forEach((button) => {{
+      button.addEventListener('click', () => {{
+        document.querySelectorAll('.base-button').forEach((b) => b.classList.remove('active'));
+        button.classList.add('active');
+        const useOsm = button.dataset.base === 'osm';
+        window.ibgeMap.setLayoutProperty('osm-base', 'visibility', useOsm ? 'visible' : 'none');
+        window.ibgeMap.setLayoutProperty('bing-base', 'visibility', useOsm ? 'none' : 'visible');
+      }});
     }});
   </script>
 </body>
