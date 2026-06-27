@@ -8,8 +8,8 @@ This product keeps the IBGE thematic weights, note scale and final class breaks,
 - Algebra: `Pixel-wise weighted map algebra on the 16 cm reference grid`
 
 ## Theme Inputs
-- `DECL`: Drone DTM; `/home/kaue/data/landslide/feb26/DTM_4_GNSS-AAT_16cm.tif`; Higher-resolution substitute for SRTM/CGIAR-CSI 90 m.
-- `USOVEG`: Custom polygon-trained LULC; `/home/kaue/landslide_susc_modelling/IBGE_method/own_LULC/outputs/lulc_custom_1m.tif`; 
+- `DECL`: Drone DTM; `/home/kaue/data/landslide/dtm_final.tif`; Higher-resolution substitute for SRTM/CGIAR-CSI 90 m.
+- `USOVEG`: Custom polygon-trained LULC; `/home/kaue/landslide_susc_modelling/IBGE_method/own_LULC/outputs_fullres/lulc_custom_ensemble_16cm.tif`
 - `GEM`: Geomorphology proxy; `/home/kaue/Downloads/05_Geospatial_Data_Maps/sig_cachoeirodoitapemirim_es_suscet/data_interest_area/04.PadrõesDeRelevo/Relevo.shp`; Local higher-resolution relief-pattern proxy for IBGE BDIA geomorphology.
 - `GEO`: Geology proxy; `/home/kaue/Downloads/05_Geospatial_Data_Maps/sig_cachoeirodoitapemirim_es_suscet/data_interest_area/06.Geologia/Geologia.shp`; Local higher-resolution SIG/SGB geology proxy for IBGE BDIA geology.
 - `PED`: Pedology proxy; `/home/kaue/Downloads/05_Geospatial_Data_Maps/sig_cachoeirodoitapemirim_es_suscet/data_interest_area/07.Pedologia/Pedologia.shp`; Local higher-resolution pedology proxy for IBGE BDIA pedology.
@@ -17,14 +17,14 @@ This product keeps the IBGE thematic weights, note scale and final class breaks,
 
 ## Pixel Coverage
 - `slope`: valid-note pixels=44972904; zero/excluded on valid DTM=0
-- `land_use`: valid-note pixels=44140385; zero/excluded on valid DTM=832519
+- `land_use`: valid-note pixels=44502702; zero/excluded on valid DTM=470202
 - `geomorphology`: valid-note pixels=44972904; zero/excluded on valid DTM=0
 - `geology`: valid-note pixels=44972904; zero/excluded on valid DTM=0
 - `pedology`: valid-note pixels=44420881; zero/excluded on valid DTM=552023
 - `pluviosity`: valid-note pixels=44972904; zero/excluded on valid DTM=0
 
 ## Final Outputs
-- Valid fraction: `0.423201`
-- Score range 1-10: `3.290553569793701` to `8.942046165466309`
+- Valid fraction: `0.426416`
+- Score range 1-10: `3.2905638217926025` to `8.942044258117676`
 
 See `summary.json`, `method_config.json`, and `provenance.json` for full machine-readable metadata.

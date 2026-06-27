@@ -1,16 +1,89 @@
 {
-  "augmentation_policy": "Training augmentation/SMOTE is allowed; fabricated source layers are not.",
-  "drone_inputs": {
-    "dtm": "/home/kaue/data/landslide/feb26/DTM_4_GNSS-AAT_16cm.tif",
-    "orthophoto": "/home/kaue/data/landslide/feb26/Ortho_4_GNSS-AAT_16cm.tif"
-  },
-  "ground_truth_25m": "/home/kaue/data/landslide/test/Ground_truth_test.tif",
-  "ibge_high_resolution_adaptation": {
-    "adapted_grid": "Drone DTM grid at 16 cm",
-    "algebra": "Pixel-wise weighted IBGE map algebra on the 16 cm grid",
-    "compliance_mode": "adapted_high_resolution_16cm",
-    "proxy_policy": "Use higher-resolution local proxies when they are compatible and document the substitution in IBGE_method reports.",
-    "strict_grid_replaced": "IBGE Grade Estatistica 1 km x 1 km"
+  "compliance_mode": "adapted_high_resolution_16cm",
+  "discontinued_methods_not_regenerated": [
+    "DL",
+    "SGB"
+  ],
+  "dtm": "/home/kaue/data/landslide/dtm_final.tif",
+  "generated_scope": "IBGE method only",
+  "input_proxies": {
+    "DECL": {
+      "path": "/home/kaue/data/landslide/dtm_final.tif",
+      "role": "Higher-resolution substitute for SRTM/CGIAR-CSI 90 m.",
+      "source": "Drone DTM"
+    },
+    "GEM": {
+      "crs": "PROJCS[\"SIRGAS 2000 / UTM zone 24S\",GEOGCS[\"SIRGAS 2000\",DATUM[\"Sistema_de_Referencia_Geocentrico_para_las_AmericaS_2000\",SPHEROID[\"GRS 1980\",6378137,298.257222101004,AUTHORITY[\"EPSG\",\"7019\"]],TOWGS84[0,0,0,0,0,0,0],AUTHORITY[\"EPSG\",\"6674\"]],PRIMEM[\"Greenwich\",0],UNIT[\"degree\",0.0174532925199433,AUTHORITY[\"EPSG\",\"9122\"]],AUTHORITY[\"EPSG\",\"4674\"]],PROJECTION[\"Transverse_Mercator\"],PARAMETER[\"latitude_of_origin\",0],PARAMETER[\"central_meridian\",-39],PARAMETER[\"scale_factor\",0.9996],PARAMETER[\"false_easting\",500000],PARAMETER[\"false_northing\",10000000],UNIT[\"metre\",1,AUTHORITY[\"EPSG\",\"9001\"]],AXIS[\"Easting\",EAST],AXIS[\"Northing\",NORTH],AUTHORITY[\"EPSG\",\"31984\"]]",
+      "feature_count": 5,
+      "field": "Classe",
+      "label": "Geomorphology proxy",
+      "mapped_values": {
+        "Colinas": 3.0,
+        "Morros altos": 9.0,
+        "Morros baixos": 7.0,
+        "Plan\u00edcies e terra\u00e7os fluviais": 1.0
+      },
+      "name": "GEM",
+      "path": "/home/kaue/Downloads/05_Geospatial_Data_Maps/sig_cachoeirodoitapemirim_es_suscet/data_interest_area/04.Padr\u00f5esDeRelevo/Relevo.shp",
+      "source_role": "Local higher-resolution relief-pattern proxy for IBGE BDIA geomorphology.",
+      "unknown_values": [],
+      "values": [
+        "Colinas",
+        "Morros altos",
+        "Morros baixos",
+        "Plan\u00edcies e terra\u00e7os fluviais"
+      ]
+    },
+    "GEO": {
+      "crs": "PROJCS[\"SIRGAS 2000 / UTM zone 24S\",GEOGCS[\"SIRGAS 2000\",DATUM[\"Sistema_de_Referencia_Geocentrico_para_las_AmericaS_2000\",SPHEROID[\"GRS 1980\",6378137,298.257222101004,AUTHORITY[\"EPSG\",\"7019\"]],TOWGS84[0,0,0,0,0,0,0],AUTHORITY[\"EPSG\",\"6674\"]],PRIMEM[\"Greenwich\",0],UNIT[\"degree\",0.0174532925199433,AUTHORITY[\"EPSG\",\"9122\"]],AUTHORITY[\"EPSG\",\"4674\"]],PROJECTION[\"Transverse_Mercator\"],PARAMETER[\"latitude_of_origin\",0],PARAMETER[\"central_meridian\",-39],PARAMETER[\"scale_factor\",0.9996],PARAMETER[\"false_easting\",500000],PARAMETER[\"false_northing\",10000000],UNIT[\"metre\",1,AUTHORITY[\"EPSG\",\"9001\"]],AXIS[\"Easting\",EAST],AXIS[\"Northing\",NORTH],AUTHORITY[\"EPSG\",\"31984\"]]",
+      "feature_count": 1,
+      "field": "SIGLA_UNID",
+      "label": "Geology proxy",
+      "mapped_values": {
+        "PRps": 7.3
+      },
+      "name": "GEO",
+      "path": "/home/kaue/Downloads/05_Geospatial_Data_Maps/sig_cachoeirodoitapemirim_es_suscet/data_interest_area/06.Geologia/Geologia.shp",
+      "source_role": "Local higher-resolution SIG/SGB geology proxy for IBGE BDIA geology.",
+      "unknown_values": [],
+      "values": [
+        "PRps"
+      ]
+    },
+    "PED": {
+      "crs": "PROJCS[\"SIRGAS 2000 / UTM zone 24S\",GEOGCS[\"SIRGAS 2000\",DATUM[\"Sistema_de_Referencia_Geocentrico_para_las_AmericaS_2000\",SPHEROID[\"GRS 1980\",6378137,298.257222101004,AUTHORITY[\"EPSG\",\"7019\"]],TOWGS84[0,0,0,0,0,0,0],AUTHORITY[\"EPSG\",\"6674\"]],PRIMEM[\"Greenwich\",0],UNIT[\"degree\",0.0174532925199433,AUTHORITY[\"EPSG\",\"9122\"]],AUTHORITY[\"EPSG\",\"4674\"]],PROJECTION[\"Transverse_Mercator\"],PARAMETER[\"latitude_of_origin\",0],PARAMETER[\"central_meridian\",-39],PARAMETER[\"scale_factor\",0.9996],PARAMETER[\"false_easting\",500000],PARAMETER[\"false_northing\",10000000],UNIT[\"metre\",1,AUTHORITY[\"EPSG\",\"9001\"]],AXIS[\"Easting\",EAST],AXIS[\"Northing\",NORTH],AUTHORITY[\"EPSG\",\"31984\"]]",
+      "feature_count": 3,
+      "field": "DESC_",
+      "label": "Pedology proxy",
+      "mapped_values": {
+        "PEe1": 8.0,
+        "Rios": 0.0
+      },
+      "name": "PED",
+      "path": "/home/kaue/Downloads/05_Geospatial_Data_Maps/sig_cachoeirodoitapemirim_es_suscet/data_interest_area/07.Pedologia/Pedologia.shp",
+      "source_role": "Local higher-resolution pedology proxy for IBGE BDIA pedology.",
+      "unknown_values": [],
+      "values": [
+        "PEe1",
+        "Rios"
+      ]
+    },
+    "PLUV": {
+      "path": "/home/kaue/Downloads/05_Geospatial_Data_Maps/sig_cachoeirodoitapemirim_es_suscet/data_interest_area/08.Isoietas/AtlasPluviometrico/IsoietasAnuaisMedias/pma2",
+      "role": "IBGE-compatible rainfall input, resampled bilinearly and converted to a continuous adapted note through the IBGE rainfall thresholds.",
+      "source": "CPRM/SGB Atlas Pluviometrico annual mean precipitation"
+    },
+    "USOVEG": {
+      "class_to_ibge_note": {
+        "1": 10.0,
+        "2": 5.0,
+        "3": 0.0,
+        "4": 2.0,
+        "5": 1.0
+      },
+      "path": "/home/kaue/landslide_susc_modelling/IBGE_method/own_LULC/outputs_fullres/lulc_custom_ensemble_16cm.tif",
+      "source": "Custom polygon-trained LULC"
+    }
   },
   "land_use": {
     "class_to_ibge_note": {
@@ -20,18 +93,26 @@
       "4": 2.0,
       "5": 1.0
     },
-    "path": "/home/kaue/landslide_susc_modelling/IBGE_method/own_LULC/outputs/lulc_custom_1m.tif",
+    "path": "/home/kaue/landslide_susc_modelling/IBGE_method/own_LULC/outputs_fullres/lulc_custom_ensemble_16cm.tif",
     "source": "Custom polygon-trained LULC"
   },
-  "municipal_sig_root": "/home/kaue/Downloads/05_Geospatial_Data_Maps/sig_cachoeirodoitapemirim_es_suscet",
-  "no_synthetic_source_data": true,
-  "official_references": {
-    "ibge_pedology_complement": "https://biblioteca.ibge.gov.br/index.php/biblioteca-catalogo?id=2102076&view=detalhes",
-    "ibge_susceptibility": "https://biblioteca.ibge.gov.br/index.php/biblioteca-catalogo?id=2101684&view=detalhes",
-    "mapbiomas_10m": "https://brasil.mapbiomas.org/mapbiomas-cobertura-10m/",
-    "sgb_cachoeiro_package": "https://rigeo.sgb.gov.br/handle/doc/14892",
-    "sgb_technical_note": "https://rigeo.sgb.gov.br/handle/doc/16588"
-  },
+  "method": "IBGE high-resolution adapted weighted susceptibility",
+  "note": "This is an IBGE-compliant high-resolution adaptation, not the strict national 1 km statistical-grid product. The IBGE weights, thematic notes and class breaks are retained, but the 1 km grade is deliberately replaced by the 16 cm drone DTM grid. Drone-derived DTM and custom deep-learning LULC are used as higher-resolution substitutes where available.",
+  "outputs": [
+    "IBGE_method/outputs/ibge_class_map_3class.tif",
+    "IBGE_method/outputs/ibge_class_map_5class.tif",
+    "IBGE_method/outputs/ibge_land_use_custom_lulc.tif",
+    "IBGE_method/outputs/ibge_note_geology.tif",
+    "IBGE_method/outputs/ibge_note_geomorphology.tif",
+    "IBGE_method/outputs/ibge_note_land_use_vegetation.tif",
+    "IBGE_method/outputs/ibge_note_pedology.tif",
+    "IBGE_method/outputs/ibge_note_pluviosity.tif",
+    "IBGE_method/outputs/ibge_note_slope.tif",
+    "IBGE_method/outputs/ibge_pluviosity_pma_mm.tif",
+    "IBGE_method/outputs/ibge_susceptibility_score.tif",
+    "IBGE_method/outputs/ibge_susceptibility_score_1to10.tif",
+    "IBGE_method/outputs/ibge_valid_mask.tif"
+  ],
   "reference_grid": {
     "area_km2": 2.6494183936002167,
     "bounds": [
@@ -42,7 +123,7 @@
     ],
     "crs": "EPSG:31984",
     "height": 18227,
-    "path": "/home/kaue/data/landslide/feb26/DTM_4_GNSS-AAT_16cm.tif",
+    "path": "/home/kaue/data/landslide/dtm_final.tif",
     "resolution": [
       0.15999999999999673,
       0.16000000000001635
@@ -59,237 +140,12 @@
     "relief": "/home/kaue/Downloads/05_Geospatial_Data_Maps/sig_cachoeirodoitapemirim_es_suscet/data_interest_area/04.Padr\u00f5esDeRelevo/Relevo.shp",
     "sgb_mass": "/home/kaue/Downloads/05_Geospatial_Data_Maps/sig_cachoeirodoitapemirim_es_suscet/data_interest_area/12.Suscetibilidade/SuscetibilidadeMovimentoDeMassa.shp"
   },
-  "validation": {
-    "methods": {
-      "dl": {
-        "against_ground_truth_25m": {
-          "labels_order": [
-            1,
-            2,
-            3
-          ],
-          "overall_accuracy": 0.8999669582197491,
-          "pixels_compared": 44570843,
-          "rows_reference_columns_prediction": [
-            [
-              36501024,
-              4301165,
-              855
-            ],
-            [
-              156537,
-              3611262,
-              0
-            ],
-            [
-              0,
-              0,
-              0
-            ]
-          ]
-        },
-        "against_official_sgb": {
-          "labels_order": [
-            1,
-            2,
-            3
-          ],
-          "overall_accuracy": 0.8894133323886201,
-          "pixels_compared": 44570843,
-          "rows_reference_columns_prediction": [
-            [
-              36191637,
-              4462162,
-              855
-            ],
-            [
-              465924,
-              3450265,
-              0
-            ],
-            [
-              0,
-              0,
-              0
-            ]
-          ]
-        },
-        "class_distribution": {
-          "classes": {
-            "1": {
-              "area_m2": 938433.5616000767,
-              "fraction": 0.8224560841265668,
-              "pixels": 36657561
-            },
-            "2": {
-              "area_m2": 202558.13120001656,
-              "fraction": 0.17752473292910345,
-              "pixels": 7912427
-            },
-            "3": {
-              "area_m2": 21.88800000000179,
-              "fraction": 1.918294432977182e-05,
-              "pixels": 855
-            }
-          },
-          "total_valid_area_m2": 1141013.5808000932
-        },
-        "prediction": "DL_method/outputs/dl_class_map_3class.tif"
-      },
-      "ibge": {
-        "against_ground_truth_25m": {
-          "labels_order": [
-            1,
-            2,
-            3
-          ],
-          "overall_accuracy": 0.031083772284400107,
-          "pixels_compared": 43798352,
-          "rows_reference_columns_prediction": [
-            [
-              1349028,
-              3221328,
-              35461318
-            ],
-            [
-              0,
-              12390,
-              3754288
-            ],
-            [
-              0,
-              0,
-              0
-            ]
-          ]
-        },
-        "against_official_sgb": {
-          "labels_order": [
-            1,
-            2,
-            3
-          ],
-          "overall_accuracy": 0.031089069287355834,
-          "pixels_compared": 43798352,
-          "rows_reference_columns_prediction": [
-            [
-              1349028,
-              3221096,
-              35308316
-            ],
-            [
-              0,
-              12622,
-              3907290
-            ],
-            [
-              0,
-              0,
-              0
-            ]
-          ]
-        },
-        "class_distribution": {
-          "classes": {
-            "1": {
-              "area_m2": 34535.11680000283,
-              "fraction": 0.030800884928273105,
-              "pixels": 1349028
-            },
-            "2": {
-              "area_m2": 82783.18080000677,
-              "fraction": 0.07383195605167976,
-              "pixels": 3233718
-            },
-            "3": {
-              "area_m2": 1003919.5136000821,
-              "fraction": 0.8953671590200473,
-              "pixels": 39215606
-            }
-          },
-          "total_valid_area_m2": 1121237.8112000916
-        },
-        "prediction": "IBGE_method/outputs/ibge_class_map_3class.tif"
-      },
-      "sgb": {
-        "against_ground_truth_25m": {
-          "labels_order": [
-            1,
-            2,
-            3
-          ],
-          "overall_accuracy": 0.5015103347148738,
-          "pixels_compared": 44338185,
-          "rows_reference_columns_prediction": [
-            [
-              18604095,
-              21842598,
-              122223
-            ],
-            [
-              137306,
-              3631963,
-              0
-            ],
-            [
-              0,
-              0,
-              0
-            ]
-          ]
-        },
-        "against_official_sgb": {
-          "labels_order": [
-            1,
-            2,
-            3
-          ],
-          "overall_accuracy": 0.5045147202123857,
-          "pixels_compared": 44338185,
-          "rows_reference_columns_prediction": [
-            [
-              18595357,
-              21700651,
-              122223
-            ],
-            [
-              146044,
-              3773910,
-              0
-            ],
-            [
-              0,
-              0,
-              0
-            ]
-          ]
-        },
-        "class_distribution": {
-          "classes": {
-            "1": {
-              "area_m2": 479779.86560003925,
-              "fraction": 0.42269211064909407,
-              "pixels": 18741401
-            },
-            "2": {
-              "area_m2": 652148.7616000533,
-              "fraction": 0.5745512812488829,
-              "pixels": 25474561
-            },
-            "3": {
-              "area_m2": 3128.9088000002557,
-              "fraction": 0.0027566081020231207,
-              "pixels": 122223
-            }
-          },
-          "total_valid_area_m2": 1135057.5360000927
-        },
-        "prediction": "SGB_method/outputs/sgb_class_map.tif"
-      }
-    },
-    "reference_outputs": {
-      "ground_truth_25m": "SGB_method/outputs/reference_ground_truth_25m_class_map.tif",
-      "official_sgb": "SGB_method/outputs/reference_official_sgb_class_map.tif"
-    }
+  "weights": {
+    "geology": 0.15,
+    "geomorphology": 0.2,
+    "land_use": 0.1,
+    "pedology": 0.15,
+    "pluviosity": 0.05,
+    "slope": 0.35
   }
 }

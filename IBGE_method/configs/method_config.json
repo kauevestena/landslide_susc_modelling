@@ -15,7 +15,7 @@
   },
   "input_proxies": {
     "DECL": {
-      "path": "/home/kaue/data/landslide/feb26/DTM_4_GNSS-AAT_16cm.tif",
+      "path": "/home/kaue/data/landslide/dtm_final.tif",
       "role": "Higher-resolution substitute for SRTM/CGIAR-CSI 90 m.",
       "source": "Drone DTM"
     },
@@ -88,7 +88,7 @@
         "4": 2.0,
         "5": 1.0
       },
-      "path": "/home/kaue/landslide_susc_modelling/IBGE_method/own_LULC/outputs/lulc_custom_1m.tif",
+      "path": "/home/kaue/landslide_susc_modelling/IBGE_method/own_LULC/outputs_fullres/lulc_custom_ensemble_16cm.tif",
       "source": "Custom polygon-trained LULC"
     }
   },
@@ -104,7 +104,7 @@
     ],
     "crs": "EPSG:31984",
     "height": 18227,
-    "path": "/home/kaue/data/landslide/feb26/DTM_4_GNSS-AAT_16cm.tif",
+    "path": "/home/kaue/data/landslide/dtm_final.tif",
     "resolution": [
       0.15999999999999673,
       0.16000000000001635

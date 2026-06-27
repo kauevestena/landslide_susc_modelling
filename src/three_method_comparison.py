@@ -5,6 +5,7 @@ from __future__ import annotations
 import argparse
 import json
 import math
+import os
 import shutil
 from collections import Counter
 from contextlib import ExitStack
@@ -90,6 +91,13 @@ def ensure_method_dirs() -> Dict[str, MethodDirs]:
 
 def local_path(*parts: str) -> Path:
     return DATA_ROOT.joinpath(*parts)
+
+
+def ibge_dtm_path() -> Path:
+    override = os.environ.get("IBGE_DTM_PATH")
+    if override:
+        return Path(override).expanduser().resolve()
+    return DRONE_DTM
 
 
 SIG_PATHS = {
@@ -707,6 +715,9 @@ def custom_lulc_land_use_mapping() -> Dict[int, float]:
 
 
 def custom_lulc_output_path() -> Path:
+    override = os.environ.get("IBGE_CUSTOM_LULC_PATH")
+    if override:
+        return Path(override).expanduser().resolve()
     selected_path = ROOT / "IBGE_method" / "own_LULC" / "outputs" / "selected_experiment.json"
     if selected_path.exists():
         selected = json.loads(selected_path.read_text(encoding="utf-8"))
@@ -1130,7 +1141,7 @@ def generate_ibge_method(reference: DatasetReader, dirs: MethodDirs) -> Dict[str
         "input_proxies": {
             "DECL": {
                 "source": "Drone DTM",
-                "path": str(DRONE_DTM),
+                "path": str(Path(reference.name).expanduser().resolve()),
                 "role": "Higher-resolution substitute for SRTM/CGIAR-CSI 90 m.",
             },
             "USOVEG": land_use_source,
@@ -1192,6 +1203,23 @@ def generate_ibge_method(reference: DatasetReader, dirs: MethodDirs) -> Dict[str
         dirs.reports / "compliance_adapted.md",
         config,
         summary,
+    )
+    write_json(
+        dirs.reports / "provenance.json",
+        {
+            "method": config["method"],
+            "compliance_mode": config["compliance_mode"],
+            "reference_grid": reference_summary(reference),
+            "dtm": str(Path(reference.name).expanduser().resolve()),
+            "land_use": land_use_source,
+            "source_layers": {key: str(path) for key, path in SIG_PATHS.items()},
+            "weights": IBGE_WEIGHTS,
+            "input_proxies": config["input_proxies"],
+            "outputs": summary["outputs"],
+            "note": config["note"],
+            "generated_scope": "IBGE method only",
+            "discontinued_methods_not_regenerated": ["DL", "SGB"],
+        },
     )
     return summary
 
@@ -1314,7 +1342,10 @@ def write_ibge_adapted_compliance_report(
         source = payload.get("source", payload.get("label", "unknown"))
         path_value = payload.get("path", payload.get("url", ""))
         role = payload.get("role", payload.get("source_role", ""))
-        lines.append(f"- `{key}`: {source}; `{path_value}`; {role}")
+        line = f"- `{key}`: {source}; `{path_value}`"
+        if role:
+            line += f"; {role}"
+        lines.append(line)
 
     lines.extend(["", "## Pixel Coverage"])
     for key in ("slope", "land_use", "geomorphology", "geology", "pedology", "pluviosity"):
@@ -1852,7 +1883,7 @@ def write_provenance(reference: DatasetReader, dirs: Dict[str, MethodDirs], vali
     provenance = {
         "reference_grid": reference_summary(reference),
         "drone_inputs": {
-            "dtm": str(DRONE_DTM),
+            "dtm": str(Path(reference.name).expanduser().resolve()),
             "orthophoto": str(DRONE_ORTHO),
         },
         "municipal_sig_root": str(SIG_ROOT),
@@ -1885,7 +1916,8 @@ def write_provenance(reference: DatasetReader, dirs: Dict[str, MethodDirs], vali
 
 
 def run(force: bool = False) -> Dict[str, Any]:
-    for path in (DRONE_DTM, DRONE_ORTHO, GROUND_TRUTH_25M):
+    reference_dtm = ibge_dtm_path()
+    for path in (reference_dtm, DRONE_ORTHO, GROUND_TRUTH_25M):
         if not path.exists():
             raise FileNotFoundError(path)
     for path in SIG_PATHS.values():
@@ -1893,7 +1925,7 @@ def run(force: bool = False) -> Dict[str, Any]:
             raise FileNotFoundError(path)
 
     dirs = ensure_method_dirs()
-    with rasterio.open(DRONE_DTM) as reference:
+    with rasterio.open(reference_dtm) as reference:
         if not force and all((group.reports / "summary.json").exists() for group in dirs.values()):
             print("Three-method outputs already exist; use --force to regenerate.", flush=True)
         else:
