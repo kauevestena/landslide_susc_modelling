@@ -236,3 +236,11 @@ IBGE_method/own_LULC/outputs_fullres/*.tif
 *.jp2
 IBGE_method/dtm_sensitivity/**/*.tif
 artifacts/derived/**/*.tif
+
+# Website report assets: keep lightweight web artifacts, block full rasters.
+!IBGE_method/website/
+!IBGE_method/website/**
+IBGE_method/website/**/*.tif
+IBGE_method/website/**/*.tiff
+IBGE_method/website/**/*.img
+IBGE_method/website/**/*.jp2
