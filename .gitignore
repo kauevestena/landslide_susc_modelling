@@ -228,3 +228,11 @@ IBGE_method/own_LULC/outputs_fullres/*.tif
 !IBGE_method/own_LULC/outputs_fullres/lulc_custom_16cm.tif
 !IBGE_method/own_LULC/outputs_fullres/lulc_custom_ensemble_16cm.tif
 
+
+# Files > 98 MB (GeoTIFFs, rasters, large data files)
+*.tif
+*.tiff
+*.img
+*.jp2
+IBGE_method/dtm_sensitivity/**/*.tif
+artifacts/derived/**/*.tif
