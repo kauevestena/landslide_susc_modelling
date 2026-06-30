@@ -663,6 +663,87 @@ def load_lulc_method_report() -> Dict[str, Any]:
     return report
 
 
+def lulc_model_narrative(row: Mapping[str, Any]) -> str:
+    architecture = str(row.get("architecture") or "").lower()
+    encoder = str(row.get("encoder") or "").lower()
+    feature_set = str(row.get("feature_set") or "").lower()
+    loss = str(row.get("loss") or "").lower()
+    architecture_notes = {
+        "unetplusplus": (
+            "U-Net++ usa conexões de salto aninhadas entre encoder e decoder. A intenção é reduzir a lacuna "
+            "semântica entre detalhes rasos da imagem e representações profundas, o que tende a ajudar em bordas "
+            "finas entre telhados, solo exposto, vegetação e pequenos corpos d'água."
+        ),
+        "deeplabv3plus": (
+            "DeepLabV3+ combina encoder convolucional com pirâmide espacial atrous. Ele foi incluído porque observa "
+            "o contexto em múltiplas escalas sem perder completamente a resolução, uma propriedade útil quando a "
+            "mesma classe aparece em manchas pequenas e grandes."
+        ),
+        "unet": (
+            "U-Net é a arquitetura de referência para segmentação supervisionada com poucos rótulos. O encoder "
+            f"`{encoder}` fornece as feições profundas e o decoder reconstrói a máscara na resolução do tile."
+        ),
+        "fpn": (
+            "FPN agrega mapas de feições em diferentes níveis de escala. Ele funciona como um contraponto aos "
+            "decoders U-Net porque enfatiza uma pirâmide explícita de feições, favorecendo a estabilidade em objetos "
+            "de tamanhos variados."
+        ),
+    }
+    encoder_notes = {
+        "resnet18": (
+            "O encoder ResNet-18 foi escolhido como opção leve e robusta, com boa relação entre capacidade e custo "
+            "computacional. Em full-res, essa escolha é importante porque cada época processa muitos tiles."
+        ),
+        "resnet34": (
+            "O encoder ResNet-34 aumenta a profundidade em relação ao ResNet-18. Ele foi usado para testar se mais "
+            "capacidade convolucional melhora classes visualmente parecidas, como solo exposto e área artificial."
+        ),
+        "mit_b0": (
+            "O encoder MiT-B0 introduz uma alternativa leve baseada em atenção/transformer. Ele não é apenas mais um "
+            "ResNet: sua função no conjunto é trazer um viés arquitetural diferente, potencialmente mais sensível a "
+            "relações espaciais amplas."
+        ),
+    }
+    feature_notes = {
+        "rgb": (
+            "O feature set RGB usa exclusivamente os três primeiros canais da ortofoto. Ele testa quanto o problema "
+            "pode ser resolvido apenas pela aparência direta dos pixels."
+        ),
+        "rgb_indices": (
+            "O feature set RGB+índices adiciona HSV, brilho, excesso de verde e textura local. Isso torna explícitas "
+            "pistas que o modelo poderia aprender sozinho, mas que ajudam quando há poucos polígonos rotulados."
+        ),
+    }
+    loss_notes = {
+        "focal_lovasz": (
+            "A perda focal reduz a influência de pixels fáceis e coloca mais peso nos erros difíceis; Lovasz aproxima "
+            "diretamente uma otimização orientada a IoU. A combinação é adequada quando a métrica de seleção é macro IoU."
+        ),
+        "focal_dice": (
+            "Focal+dice combina foco em exemplos difíceis com sobreposição espacial. Ela é útil para classes pequenas "
+            "porque a componente dice não deixa a otimização ser dominada apenas pela frequência dos pixels."
+        ),
+        "weighted_ce_lovasz": (
+            "Cross-entropy ponderada preserva uma interpretação probabilística por pixel e compensa frequências de "
+            "classe; Lovasz adiciona pressão direta sobre IoU. Essa combinação é um teste forte para classes raras."
+        ),
+        "weighted_ce_dice": (
+            "Cross-entropy ponderada+dice foi a linha de base. Ela combina estabilidade de treino com uma componente "
+            "de sobreposição espacial."
+        ),
+    }
+    return " ".join(
+        part
+        for part in (
+            architecture_notes.get(architecture),
+            encoder_notes.get(encoder),
+            feature_notes.get(feature_set),
+            loss_notes.get(loss),
+        )
+        if part
+    )
+
+
 def complete_lulc_method_markdown(report: Mapping[str, Any]) -> str:
     params = report["params"]
     training = params["training"]
@@ -682,6 +763,7 @@ def complete_lulc_method_markdown(report: Mapping[str, Any]) -> str:
     ]
     voter_lines = []
     for row in voters:
+        narrative = lulc_model_narrative(row)
         voter_lines.extend(
             [
                 f"- Modelo {row['model_order']}: {row['display_name']}.",
@@ -690,6 +772,7 @@ def complete_lulc_method_markdown(report: Mapping[str, Any]) -> str:
                 f"- Treinamento: {row.get('epochs') or 'pendente'} épocas planejadas/executadas; melhor época {row.get('best_epoch') or 'pendente'}.",
                 f"- Validação: macro IoU {fmt_optional_number(row.get('val_macro_iou'))}, macro F1 {fmt_optional_number(row.get('val_macro_f1'))}, acurácia global {fmt_optional_number(row.get('val_overall_accuracy'))}.",
                 f"- Teste final: macro IoU {fmt_optional_number(row.get('test_macro_iou'))}, macro F1 {fmt_optional_number(row.get('test_macro_f1'))}, acurácia global {fmt_optional_number(row.get('test_overall_accuracy'))}.",
+                f"- Leitura técnica: {narrative or 'descrição técnica pendente para esta configuração.'}",
                 "",
             ]
         )
@@ -706,7 +789,13 @@ def complete_lulc_method_markdown(report: Mapping[str, Any]) -> str:
         "",
         "Esta aba documenta o método de geração da camada LULC usada como tema USOVEG no produto IBGE adaptado. O objetivo do LULC foi substituir uma base regional ou nacional de uso e cobertura da terra por um produto local treinado com polígonos interpretados sobre ortofoto de drone.",
         "",
-        "A implementação está versionada no repositório, principalmente em `IBGE_method/own_LULC/lulc_inputs.py` e nos módulos de `IBGE_method/own_LULC/implementation/`. O arquivo `lulc_inputs.py` é a superfície única de hiperparâmetros: entradas, classes, resolução, divisão espacial, modelos, perdas, treino, inferência e ensemble ficam declarados ali.",
+        "A implementação está versionada no repositório, principalmente em `IBGE_method/own_LULC/lulc_inputs.py` e nos módulos de `IBGE_method/own_LULC/implementation/`. O arquivo `lulc_inputs.py` é a superfície única de hiperparâmetros: entradas, classes, resolução, divisão espacial, modelos, perdas, treino, inferência e ensemble ficam declarados ali. Isso é intencional: o relatório deve explicar uma configuração que pode ser reexecutada, e não uma sequência informal de decisões manuais.",
+        "",
+        "Este método LULC tem uma função específica dentro do produto final. Ele não estima suscetibilidade diretamente. Ele classifica cobertura e uso da terra em cinco classes locais; depois, essas classes são convertidas para a nota USOVEG da álgebra IBGE. Portanto, o LULC influencia o score final apenas pelo peso de USOVEG, mas influencia também a máscara válida porque corpos d'água são excluídos da suscetibilidade.",
+        "",
+        "## Leitura recomendada da aba",
+        "",
+        "A primeira parte descreve o dado de entrada, a codificação das classes e o desenho de avaliação. A segunda parte descreve as cinco redes individuais, porque cada uma foi incluída e como ler suas métricas. A terceira parte descreve o ensemble, que é o produto de produção usado pelo IBGE adaptado. As tabelas no final reproduzem os números dos arquivos JSON disponíveis localmente; se os artefatos da máquina externa forem substituídos depois, o site passa a refletir os novos números na próxima geração.",
         "",
         "## Entradas e codificação de classes",
         "",
@@ -717,9 +806,13 @@ def complete_lulc_method_markdown(report: Mapping[str, Any]) -> str:
         f"- Pixels ignorados no treinamento: `{params['ignore_index']}`.",
         f"- Nodata no raster LULC final: `{params['output_nodata']}`.",
         "",
-        "As classes usadas no raster final são os códigos originais 1 a 5. Internamente, durante o treinamento, elas são convertidas para índices 0 a 4 porque a função de perda multiclasse espera classes contíguas. Na escrita do GeoTIFF final, a codificação volta para 1 a 5.",
+        "As classes usadas no raster final são os códigos originais 1 a 5. Internamente, durante o treinamento, elas são convertidas para índices 0 a 4 porque a função de perda multiclasse espera classes contíguas. Na escrita do GeoTIFF final, a codificação volta para 1 a 5. Esse detalhe é importante para auditoria: as métricas internas por classe normalmente aparecem como 0, 1, 2, 3 e 4, enquanto o GeoTIFF final e a álgebra IBGE usam 1, 2, 3, 4 e 5.",
+        "",
+        "O valor 255 é usado apenas para pixels ignorados no treinamento. Isso inclui pixels fora dos polígonos rotulados, pixels inválidos da ortofoto e regiões onde não se quer calcular perda. Esse valor nunca deve aparecer como classe LULC final. O valor 0 é reservado para nodata de saída, isto é, pixels onde o modelo não deve produzir uma classe válida.",
         "",
         *class_lines,
+        "",
+        "A interpretação semântica das classes foi mantida curta no raster para evitar ambiguidades: `artif` representa áreas artificiais, `descob` representa solo descoberto ou superfícies expostas não vegetadas, `corpo_agua` representa água, `veg_campestre` representa vegetação baixa/campestre e `veg_florestal` representa vegetação arbórea/florestal. Para o IBGE adaptado, essas classes não entram como nomes; entram como notas USOVEG: artificial recebe nota alta, solo descoberto recebe nota intermediária, vegetação recebe notas baixas e água é excluída.",
         "",
         "## Conjuntos de variáveis",
         "",
@@ -727,7 +820,11 @@ def complete_lulc_method_markdown(report: Mapping[str, Any]) -> str:
         "",
         *feature_lines,
         "",
-        "O conjunto `rgb_indices` amplia o RGB com HSV, brilho, excesso de verde e textura local. Ele foi incluído para ajudar a separar vegetação, solo exposto, água e superfícies artificiais quando a assinatura espectral RGB pura é ambígua.",
+        "O conjunto `rgb` preserva o problema na forma mais direta possível: o modelo vê vermelho, verde e azul e precisa aprender as separações a partir da aparência. Ele é simples, barato e reduz o risco de introduzir transformações artificiais que distorçam os dados.",
+        "",
+        "O conjunto `rgb_indices` amplia o RGB com HSV, brilho, excesso de verde e textura local. Ele foi incluído para ajudar a separar vegetação, solo exposto, água e superfícies artificiais quando a assinatura espectral RGB pura é ambígua. O excesso de verde favorece a separação de vegetação; HSV explicita matiz e saturação; brilho ajuda em sombras e superfícies claras; textura local ajuda a diferenciar telhados, copas, solo exposto e áreas homogêneas de água.",
+        "",
+        "A quarta banda da ortofoto, quando existe, não é usada como classe ou feição espectral principal. Ela pode atuar como máscara de validade, evitando que regiões sem imagem útil entrem no treinamento ou na inferência. A decisão de usar apenas os três primeiros canais como RGB reduz dependência de um canal alfa que pode variar entre exportações de ortofoto.",
         "",
         "## Divisão espacial e desenho de avaliação",
         "",
@@ -736,7 +833,13 @@ def complete_lulc_method_markdown(report: Mapping[str, Any]) -> str:
         f"- Exigência de todas as classes em cada split: `{report['split_constraints']['require_all_classes_per_split']}`.",
         f"- Tentativas máximas de seeds para achar split viável: `{report['split_constraints']['max_seed_attempts']}`.",
         "",
-        "A divisão não é uma amostragem aleatória simples de pixels. Ela usa blocos espaciais para reduzir vazamento espacial entre treino, validação e teste. Além disso, as metas de proporção são aplicadas por classe: a ideia é que cada classe tenha suporte próprio em treino, validação e teste, evitando avaliações artificialmente boas ou ruins por ausência de uma classe minoritária.",
+        "A divisão não é uma amostragem aleatória simples de pixels. Ela usa blocos espaciais para reduzir vazamento espacial entre treino, validação e teste. Se pixels vizinhos quase idênticos fossem sorteados aleatoriamente para splits diferentes, a validação poderia medir memorização local da ortofoto, e não generalização para blocos realmente não vistos.",
+        "",
+        "Além disso, as metas de proporção são aplicadas por classe. Isso significa que a distribuição desejada de treino, validação e teste é verificada dentro de cada classe, não apenas no total de pixels. Essa escolha foi feita depois de observar que classes minoritárias podiam ficar com suporte muito baixo em validação ou teste. Sem suporte mínimo por classe, a macro IoU fica instável: uma classe pequena pode dominar a interpretação da métrica por acaso, ou simplesmente não ser avaliada de maneira útil.",
+        "",
+        "A validação é usada para seleção de modelos e escolha do ensemble. O teste é mantido como confirmação final. Essa separação é deliberada: olhar o teste para escolher modelo causaria viés de seleção. No relatório, por isso, a macro IoU de validação explica por que um modelo foi considerado forte, enquanto a macro IoU de teste indica se essa escolha se confirmou em blocos mantidos fora da seleção.",
+        "",
+        "A métrica principal é macro IoU em cinco classes. Macro IoU calcula IoU por classe e depois tira a média simples, dando o mesmo peso a classes grandes e pequenas. Isso é mais exigente do que acurácia global, porque um modelo não pode compensar desempenho ruim em `descob` ou `corpo_agua` acertando muitos pixels de vegetação.",
         "",
         "## Amostragem balanceada e aumento de dados",
         "",
@@ -754,6 +857,18 @@ def complete_lulc_method_markdown(report: Mapping[str, Any]) -> str:
         "",
         "O sampler pondera tiles com maior presença de classes raras. Isso aumenta a frequência com que água, solo exposto ou outras classes de menor área aparecem nos batches de treinamento, sem alterar a avaliação. A validação e o teste continuam feitos nos blocos espaciais mantidos fora do treino.",
         "",
+        "A ponderação por classe e o sampler balanceado atacam problemas diferentes. A ponderação na função de perda aumenta o custo de errar classes raras nos pixels rotulados. O sampler aumenta a chance de essas classes raras aparecerem nos batches. Em conjunto, eles evitam que o treinamento seja dominado pela classe espacialmente mais abundante.",
+        "",
+        "Os aumentos de dados foram mantidos conservadores. Flips e rotações de 90 graus são adequados porque a classe de uso e cobertura não depende da orientação absoluta da imagem. Pequenas mudanças de brilho e contraste simulam diferenças de iluminação e exposição. Borramento e ruído existem como hiperparâmetros, mas ficam desabilitados por padrão para não degradar bordas finas em uma ortofoto de 16 cm.",
+        "",
+        "O otimizador AdamW foi usado porque separa atualização de pesos e decaimento, sendo estável em redes de segmentação modernas. O scheduler cosseno reduz a taxa de aprendizado progressivamente, permitindo passos maiores no início e ajustes mais finos no final das 100 épocas.",
+        "",
+        "## Funções de perda testadas",
+        "",
+        "Foram usadas combinações de perdas complementares. Cross-entropy ponderada é uma perda por pixel estável e probabilística; focal loss reduz o peso de exemplos fáceis e enfatiza erros difíceis; dice loss favorece sobreposição espacial; Lovasz aproxima diretamente uma otimização ligada à IoU. Como o objetivo de seleção é macro IoU, Lovasz é especialmente útil nas configurações em que a prioridade é melhorar interseção sobre união, e não apenas acurácia por pixel.",
+        "",
+        "A combinação `weighted_ce_dice` foi usada como linha de base. `focal_dice` foi testada para tornar o treino mais sensível a exemplos difíceis sem abandonar a ideia de sobreposição. `weighted_ce_lovasz` e `focal_lovasz` foram incluídas para pressionar diretamente a métrica de IoU, o que faz sentido quando classes pequenas precisam aparecer bem na avaliação macro.",
+        "",
         "## Inferência full-resolution",
         "",
         f"- Janela de inferência: `{inference['window_size']}` pixels.",
@@ -761,7 +876,15 @@ def complete_lulc_method_markdown(report: Mapping[str, Any]) -> str:
         f"- Batch de inferência: `{inference['batch_size']}`.",
         f"- CUDA habilitado quando disponível: `{inference['use_cuda']}`.",
         "",
-        "A inferência percorre a ortofoto em janelas sobrepostas. Para cada pixel, as probabilidades acumuladas nas janelas que o cobrem são médias antes da decisão final. O resultado individual de cada modelo inclui um raster de classes e um raster multibanda de probabilidades, com cinco bandas, uma por classe.",
+        "A inferência percorre a ortofoto em janelas sobrepostas. Para cada pixel, as probabilidades acumuladas nas janelas que o cobrem são médias antes da decisão final. A sobreposição reduz artefatos de borda, porque pixels próximos às margens de uma janela também são vistos em outra janela, mais centralizada.",
+        "",
+        "O resultado individual de cada modelo inclui um raster de classes e um raster multibanda de probabilidades, com cinco bandas, uma por classe. O raster de classes é útil para inspeção direta. O raster de probabilidades é mais importante para o ensemble, porque preserva incerteza: um modelo que prevê classe 4 com probabilidade 0,51 carrega informação diferente de um modelo que prevê classe 4 com probabilidade 0,99.",
+        "",
+        "## Por que cinco modelos diferentes",
+        "",
+        "O ensemble não foi desenhado para juntar cinco cópias quase idênticas do mesmo treinamento. Ele combina arquiteturas, encoders, losses e feature sets diferentes. A motivação é reduzir dependência de um único viés de modelo. Quando modelos diferentes convergem para a mesma classe em um pixel, a confiança interpretativa aumenta. Quando divergem, os rasters de concordância, margem e entropia indicam onde o mapa merece inspeção humana.",
+        "",
+        "A diversidade arquitetural cobre quatro famílias: U-Net++, DeepLabV3+, U-Net e FPN. A diversidade de encoder cobre ResNet-18, ResNet-34 e MiT-B0. A diversidade de perda cobre focal, dice, Lovasz e cross-entropy ponderada. A diversidade de features aparece principalmente no modelo U-Net++ com `rgb_indices`, enquanto os demais mantêm RGB para testar robustez sem engenharia adicional de canais.",
         "",
         "## Os cinco modelos full-res",
         "",
@@ -780,6 +903,38 @@ def complete_lulc_method_markdown(report: Mapping[str, Any]) -> str:
         f"- Entropia média normalizada: {fmt_optional_number(agreement.get('mean_entropy'))}.",
         "",
         "O ensemble usa média de probabilidades. Esse método é preferido ao voto majoritário simples porque preserva a confiança de cada modelo. Em cada pixel, as cinco distribuições de probabilidade são somadas e normalizadas; a classe final é a classe com maior probabilidade média. A concordância por voto duro é gravada como diagnóstico separado, junto com confiança, margem e entropia.",
+        "",
+        "Na prática, a média de probabilidades responde a duas perguntas ao mesmo tempo. A primeira é qual classe recebeu maior suporte coletivo dos modelos. A segunda é quão concentrado foi esse suporte. Se todos os modelos favorecem a mesma classe com alta probabilidade, a confiança e a margem tendem a ser altas e a entropia tende a ser baixa. Se os modelos se dividem entre duas classes, a classe final ainda é definida, mas a margem diminui e a entropia aumenta.",
+        "",
+        "A concordância por voto duro é uma métrica diferente da confiança probabilística. Ela mede a fração de modelos cuja classe mais provável coincide com a classe final do ensemble. Uma concordância baixa pode ocorrer mesmo quando a confiança média é alta, especialmente em pixels onde um modelo diverge sistematicamente dos demais ou onde probabilidades muito fortes de alguns modelos superam votos mais fracos de outros. Por isso, concordância, confiança, margem e entropia devem ser lidas em conjunto, não isoladamente.",
+        "",
+        "A margem é a diferença entre a maior e a segunda maior probabilidade média. Ela é uma das métricas mais úteis para revisão visual: margens baixas indicam zonas de fronteira, mistura espectral ou ambiguidade semântica. A entropia normalizada mede dispersão geral entre as cinco classes. Entropia alta indica que o ensemble não concentrou probabilidade em uma única classe; nesses locais, a classificação final deve ser tratada como menos estável.",
+        "",
+        "## Interpretação das métricas",
+        "",
+        "A acurácia global mostra a fração de pixels avaliados corretamente, mas pode ser excessivamente otimista quando uma classe ocupa grande área. Macro F1 resume equilíbrio entre precisão e revocação por classe. Macro IoU é a métrica mais rígida e foi usada como principal critério porque penaliza simultaneamente falsos positivos e falsos negativos em cada classe.",
+        "",
+        "Resultados muito altos em validação e teste indicam que os polígonos rotulados, o grid full-res e o desenho de split produziram um problema separável para os blocos avaliados. Isso é bom, mas não elimina a necessidade de auditoria visual. A avaliação mede desempenho contra os rótulos disponíveis; se os rótulos tiverem bordas imprecisas, classes semanticamente misturadas ou lacunas fora dos polígonos, essas limitações não aparecem automaticamente nas métricas.",
+        "",
+        "No uso final, os rasters de diagnóstico do ensemble são tão importantes quanto o raster de classe. Áreas com baixa margem, baixa concordância ou entropia mais alta devem ser priorizadas em revisão humana, principalmente quando coincidem com transições entre vegetação campestre, vegetação florestal, solo exposto e áreas artificiais.",
+        "",
+        "## Relação com o IBGE adaptado",
+        "",
+        "O LULC entra no IBGE adaptado como USOVEG. A conversão é feita depois da classificação: classe 1 vira nota 10, classe 2 vira nota 5, classe 3 vira nota 0 e é excluída da máscara válida, classe 4 vira nota 2 e classe 5 vira nota 1. Essa transformação é deliberadamente simples para manter rastreabilidade entre o mapa de cobertura e a álgebra IBGE.",
+        "",
+        "Como o peso de USOVEG na álgebra final é 0,10, erros de LULC não dominam sozinhos o score IBGE. Ainda assim, podem alterar o resultado em zonas urbanizadas, solo exposto e bordas de água. A classe de água é especialmente sensível porque afeta a máscara válida, não apenas a nota ponderada.",
+        "",
+        "## Limitações e cuidados",
+        "",
+        "O treinamento depende dos polígonos disponíveis. Áreas não representadas nos polígonos podem ser classificadas com menor confiabilidade, mesmo que a métrica em validação e teste seja alta. A ortofoto também representa uma data específica; mudanças posteriores de uso do solo não são capturadas sem nova imagem ou nova inferência.",
+        "",
+        "O produto full-res tem granularidade de 16 cm, mas a semântica das classes não deve ser interpretada como verdade absoluta em cada pixel isolado. Em ortofotos de alta resolução, bordas de copa, sombras, transições solo-vegetação e superfícies parcialmente cobertas podem misturar respostas espectrais. Por isso, a leitura mais robusta é espacial: padrões contínuos e zonas de incerteza são mais informativos do que pixels isolados.",
+        "",
+        "## Reprodutibilidade",
+        "",
+        "A execução full-res foi preparada para máquina externa com CUDA. O script `IBGE_method/own_LULC/run_fullres_external.sh` recebe a ortofoto como argumento, exporta os caminhos necessários e executa a varredura full-res com retomada segura. O ensemble pode ser reconstruído a partir dos rasters de probabilidade já gerados, sem retreinar os modelos, desde que os artefatos de cada votante estejam presentes.",
+        "",
+        "Os principais arquivos de controle são `lulc_inputs.py`, `sweep_results.json`, `ensemble_results.json` e `selected_experiment.json`. O primeiro descreve o que deveria ser executado; os três últimos descrevem o que foi efetivamente executado e selecionado. Esta aba lê esses artefatos e evita copiar modelos ou GeoTIFFs para o website.",
         "",
         "## Observação sobre placeholders",
         "",
