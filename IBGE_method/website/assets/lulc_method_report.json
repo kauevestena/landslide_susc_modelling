@@ -1,0 +1,1202 @@
+{
+  "source_dir": "/home/kaue/landslide_susc_modelling/IBGE_method/own_LULC/outputs_fullres",
+  "selected_experiment_path": "/home/kaue/landslide_susc_modelling/IBGE_method/own_LULC/outputs_fullres/selected_experiment.json",
+  "ensemble_results_path": "/home/kaue/landslide_susc_modelling/IBGE_method/own_LULC/outputs_fullres/ensemble_results.json",
+  "sweep_results_path": "/home/kaue/landslide_susc_modelling/IBGE_method/own_LULC/outputs_fullres/sweep_results.json",
+  "metrics_available": true,
+  "metrics_note": "Métricas lidas dos artefatos locais em outputs_fullres/.",
+  "class_definitions": [
+    {
+      "class_id": 1,
+      "name": "artif",
+      "ibge_land_use_note": 10.0
+    },
+    {
+      "class_id": 2,
+      "name": "descob",
+      "ibge_land_use_note": 5.0
+    },
+    {
+      "class_id": 3,
+      "name": "corpo_agua",
+      "ibge_land_use_note": 0.0
+    },
+    {
+      "class_id": 4,
+      "name": "veg_campestre",
+      "ibge_land_use_note": 2.0
+    },
+    {
+      "class_id": 5,
+      "name": "veg_florestal",
+      "ibge_land_use_note": 1.0
+    }
+  ],
+  "feature_sets": {
+    "rgb": {
+      "channels": [
+        "red",
+        "green",
+        "blue"
+      ]
+    },
+    "rgb_indices": {
+      "channels": [
+        "red",
+        "green",
+        "blue",
+        "hue",
+        "saturation",
+        "value",
+        "brightness",
+        "excess_green",
+        "local_texture"
+      ]
+    }
+  },
+  "split_constraints": {
+    "strategy": "stratified_spatial_blocks",
+    "max_seed_attempts": 400,
+    "require_all_classes_per_split": true,
+    "min_val_test_pixels_per_class_cap": 20,
+    "min_val_test_class_fraction": 0.05
+  },
+  "sampler": {
+    "strategy": "class_balanced_weighted",
+    "rare_class_power": 1.0,
+    "max_weight": 20.0
+  },
+  "ensemble_config": {
+    "enabled": true,
+    "strategy": "probability_average",
+    "voter_policy": "diverse_top_models",
+    "min_val_macro_iou": 0.98,
+    "max_models": 5,
+    "exclude_smoke_runs": true,
+    "lulc_filename": "lulc_custom_ensemble_1m.tif",
+    "probabilities_filename": "lulc_custom_ensemble_probabilities_1m.tif",
+    "agreement_filename": "lulc_custom_ensemble_agreement_1m.tif",
+    "confidence_filename": "lulc_custom_ensemble_confidence_1m.tif",
+    "margin_filename": "lulc_custom_ensemble_margin_1m.tif",
+    "entropy_filename": "lulc_custom_ensemble_entropy_1m.tif",
+    "results_json_filename": "ensemble_results.json",
+    "results_csv_filename": "ensemble_results.csv",
+    "low_agreement_threshold": 0.6,
+    "low_margin_threshold": 0.2,
+    "high_entropy_threshold": 1.0
+  },
+  "params": {
+    "polygons": "IBGE_method/own_LULC/extra_data/Classes_Uso_Solo.gpkg",
+    "orthophoto": "/home/kaue/data/landslide/feb26/Ortho_4_GNSS-AAT_16cm.tif",
+    "class_text_field": "Classe",
+    "class_value_field": "Class_num",
+    "output_nodata": 0,
+    "ignore_index": 255,
+    "train_percentage": 0.5,
+    "validation_percentage": 0.35,
+    "test_percentage": 0.15,
+    "training": {
+      "epochs": 100,
+      "batch_size": 8,
+      "learning_rate": 0.0003,
+      "weight_decay": 0.0001,
+      "optimizer": "adamw",
+      "scheduler": "cosine",
+      "class_weight_strategy": "inverse_frequency",
+      "early_stopping_patience": 100,
+      "num_workers": 0,
+      "use_cuda": true,
+      "save_best_metric": "macro_iou"
+    },
+    "augmentation": {
+      "flip_probability": 0.5,
+      "rotate90": true,
+      "brightness": 0.08,
+      "contrast": 0.12,
+      "blur_enabled": false,
+      "blur_kernel_size": 3,
+      "noise_enabled": false,
+      "noise_std": 0.01
+    },
+    "inference": {
+      "window_size": 256,
+      "overlap": 64,
+      "batch_size": 8,
+      "use_cuda": true
+    },
+    "postprocessing": {
+      "smoothing_enabled": false,
+      "smoothing_sigma": 0.75,
+      "minimum_mapping_confidence": 0.0
+    },
+    "loss": {
+      "name": "weighted_ce_dice",
+      "cross_entropy_weight": 1.0,
+      "dice_weight": 0.5,
+      "focal_weight": 1.0,
+      "focal_gamma": 2.0,
+      "lovasz_weight": 0.5
+    }
+  },
+  "fullres_experiments": {
+    "fullres_unetplusplus_resnet18_focal_lovasz_rgb_indices": {
+      "resolution": 0.16,
+      "tile_size": 192,
+      "stride": 96,
+      "inference_window_size": 256,
+      "inference_overlap": 64,
+      "feature_set": "rgb_indices",
+      "model": {
+        "architecture": "unetplusplus",
+        "encoder": "resnet18"
+      },
+      "loss": {
+        "name": "focal_lovasz"
+      },
+      "seeds": [
+        42
+      ]
+    },
+    "fullres_deeplabv3plus_resnet18_focal_dice_rgb": {
+      "resolution": 0.16,
+      "tile_size": 192,
+      "stride": 96,
+      "inference_window_size": 256,
+      "inference_overlap": 64,
+      "feature_set": "rgb",
+      "model": {
+        "architecture": "deeplabv3plus",
+        "encoder": "resnet18"
+      },
+      "loss": {
+        "name": "focal_dice"
+      },
+      "seeds": [
+        42
+      ]
+    },
+    "fullres_unet_resnet34_weighted_ce_lovasz_rgb": {
+      "resolution": 0.16,
+      "tile_size": 192,
+      "stride": 96,
+      "inference_window_size": 256,
+      "inference_overlap": 64,
+      "feature_set": "rgb",
+      "model": {
+        "architecture": "unet",
+        "encoder": "resnet34"
+      },
+      "loss": {
+        "name": "weighted_ce_lovasz"
+      },
+      "seeds": [
+        42
+      ]
+    },
+    "fullres_unet_mit_b0_focal_lovasz_rgb": {
+      "resolution": 0.16,
+      "tile_size": 192,
+      "stride": 96,
+      "inference_window_size": 256,
+      "inference_overlap": 64,
+      "feature_set": "rgb",
+      "model": {
+        "architecture": "unet",
+        "encoder": "mit_b0"
+      },
+      "loss": {
+        "name": "focal_lovasz"
+      },
+      "seeds": [
+        42
+      ]
+    },
+    "fullres_fpn_resnet34_weighted_ce_lovasz_rgb": {
+      "resolution": 0.16,
+      "tile_size": 192,
+      "stride": 96,
+      "inference_window_size": 256,
+      "inference_overlap": 64,
+      "feature_set": "rgb",
+      "model": {
+        "architecture": "fpn",
+        "encoder": "resnet34"
+      },
+      "loss": {
+        "name": "weighted_ce_lovasz"
+      },
+      "seeds": [
+        42
+      ]
+    }
+  },
+  "voters": [
+    {
+      "run_id": "fullres_unetplusplus_resnet18_focal_lovasz_rgb_indices_seed42",
+      "experiment": "fullres_unetplusplus_resnet18_focal_lovasz_rgb_indices",
+      "architecture": "unetplusplus",
+      "encoder": "resnet18",
+      "feature_set": "rgb_indices",
+      "loss": "focal_lovasz",
+      "resolution": 0.16,
+      "seed": 42,
+      "epochs": 100,
+      "best_epoch": 61,
+      "tile_size": 192,
+      "stride": 96,
+      "val_macro_iou": 0.9973474783358391,
+      "val_macro_f1": 0.9986668794929725,
+      "val_overall_accuracy": 0.9996276192272376,
+      "test_macro_iou": 0.9767295962254448,
+      "test_macro_f1": 0.9879718124295014,
+      "test_overall_accuracy": 0.9980392187521988,
+      "output_dir": "/home/kaue/landslide_susc_modelling/IBGE_method/own_LULC/outputs_fullres/experiments/fullres_unetplusplus_resnet18_focal_lovasz_rgb_indices_seed42",
+      "model_order": 1,
+      "display_name": "U-Net++ / resnet18"
+    },
+    {
+      "run_id": "fullres_deeplabv3plus_resnet18_focal_dice_rgb_seed42",
+      "experiment": "fullres_deeplabv3plus_resnet18_focal_dice_rgb",
+      "architecture": "deeplabv3plus",
+      "encoder": "resnet18",
+      "feature_set": "rgb",
+      "loss": "focal_dice",
+      "resolution": 0.16,
+      "seed": 42,
+      "epochs": 100,
+      "best_epoch": 68,
+      "tile_size": 192,
+      "stride": 96,
+      "val_macro_iou": 0.9977573493109675,
+      "val_macro_f1": 0.9988743548855906,
+      "val_overall_accuracy": 0.9996544636822057,
+      "test_macro_iou": 0.9991846794219663,
+      "test_macro_f1": 0.9995920850427407,
+      "test_overall_accuracy": 0.9995825130836021,
+      "output_dir": "/home/kaue/landslide_susc_modelling/IBGE_method/own_LULC/outputs_fullres/experiments/fullres_deeplabv3plus_resnet18_focal_dice_rgb_seed42",
+      "model_order": 2,
+      "display_name": "DeepLabV3+ / resnet18"
+    },
+    {
+      "run_id": "fullres_unet_resnet34_weighted_ce_lovasz_rgb_seed42",
+      "experiment": "fullres_unet_resnet34_weighted_ce_lovasz_rgb",
+      "architecture": "unet",
+      "encoder": "resnet34",
+      "feature_set": "rgb",
+      "loss": "weighted_ce_lovasz",
+      "resolution": 0.16,
+      "seed": 42,
+      "epochs": 100,
+      "best_epoch": 100,
+      "tile_size": 192,
+      "stride": 96,
+      "val_macro_iou": 0.9991879038711279,
+      "val_macro_f1": 0.9995937209259805,
+      "val_overall_accuracy": 0.9997012693985603,
+      "test_macro_iou": 0.9955777447748158,
+      "test_macro_f1": 0.9977827611178558,
+      "test_overall_accuracy": 0.9973652979246053,
+      "output_dir": "/home/kaue/landslide_susc_modelling/IBGE_method/own_LULC/outputs_fullres/experiments/fullres_unet_resnet34_weighted_ce_lovasz_rgb_seed42",
+      "model_order": 3,
+      "display_name": "U-Net / resnet34"
+    },
+    {
+      "run_id": "fullres_unet_mit_b0_focal_lovasz_rgb_seed42",
+      "experiment": "fullres_unet_mit_b0_focal_lovasz_rgb",
+      "architecture": "unet",
+      "encoder": "mit_b0",
+      "feature_set": "rgb",
+      "loss": "focal_lovasz",
+      "resolution": 0.16,
+      "seed": 42,
+      "epochs": 100,
+      "best_epoch": 99,
+      "tile_size": 192,
+      "stride": 96,
+      "val_macro_iou": 0.9907624999969888,
+      "val_macro_f1": 0.9953176494711562,
+      "val_overall_accuracy": 0.9970037458339471,
+      "test_macro_iou": 0.9920231508427211,
+      "test_macro_f1": 0.995972071939328,
+      "test_overall_accuracy": 0.9990211729975091,
+      "output_dir": "/home/kaue/landslide_susc_modelling/IBGE_method/own_LULC/outputs_fullres/experiments/fullres_unet_mit_b0_focal_lovasz_rgb_seed42",
+      "model_order": 4,
+      "display_name": "U-Net / mit_b0"
+    },
+    {
+      "run_id": "fullres_fpn_resnet34_weighted_ce_lovasz_rgb_seed42",
+      "experiment": "fullres_fpn_resnet34_weighted_ce_lovasz_rgb",
+      "architecture": "fpn",
+      "encoder": "resnet34",
+      "feature_set": "rgb",
+      "loss": "weighted_ce_lovasz",
+      "resolution": 0.16,
+      "seed": 42,
+      "epochs": 100,
+      "best_epoch": 77,
+      "tile_size": 192,
+      "stride": 96,
+      "val_macro_iou": 0.9982628487184766,
+      "val_macro_f1": 0.9991302099288459,
+      "val_overall_accuracy": 0.9990432360921632,
+      "test_macro_iou": 0.978185035850639,
+      "test_macro_f1": 0.9887907494589756,
+      "test_overall_accuracy": 0.997216753890681,
+      "output_dir": "/home/kaue/landslide_susc_modelling/IBGE_method/own_LULC/outputs_fullres/experiments/fullres_fpn_resnet34_weighted_ce_lovasz_rgb_seed42",
+      "model_order": 5,
+      "display_name": "FPN / resnet34"
+    }
+  ],
+  "ensemble": {
+    "agreement_summary": {
+      "by_predicted_class": {
+        "1": {
+          "mean_agreement": 0.08923566341400146,
+          "mean_confidence": 0.9844790697097778,
+          "mean_entropy": 0.04093528166413307,
+          "mean_margin": 0.9748177528381348,
+          "pixels": 64849586
+        },
+        "2": {
+          "mean_agreement": 0.8505074977874756,
+          "mean_confidence": 0.812771201133728,
+          "mean_entropy": 0.29141807556152344,
+          "mean_margin": 0.6813079714775085,
+          "pixels": 846639
+        },
+        "3": {
+          "mean_agreement": 0.9308327436447144,
+          "mean_confidence": 0.9156689643859863,
+          "mean_entropy": 0.12198824435472488,
+          "mean_margin": 0.8558903932571411,
+          "pixels": 470202
+        },
+        "4": {
+          "mean_agreement": 0.9605932831764221,
+          "mean_confidence": 0.9402879476547241,
+          "mean_entropy": 0.10407375544309616,
+          "mean_margin": 0.8927902579307556,
+          "pixels": 29033553
+        },
+        "5": {
+          "mean_agreement": 0.9003928899765015,
+          "mean_confidence": 0.8703951835632324,
+          "mean_entropy": 0.19672653079032898,
+          "mean_margin": 0.7636779546737671,
+          "pixels": 8298604
+        }
+      },
+      "high_entropy_pixels": 0,
+      "low_agreement_pixels": 59551277,
+      "low_margin_pixels": 2408857,
+      "mean_agreement": 0.40876007080078125,
+      "mean_confidence": 0.961217999458313,
+      "mean_entropy": 0.07355567067861557,
+      "mean_margin": 0.9319366216659546,
+      "valid_pixels": 103498584
+    },
+    "metrics": {
+      "test": {
+        "confusion": [
+          [
+            208596,
+            0,
+            0,
+            0,
+            0
+          ],
+          [
+            0,
+            14715,
+            0,
+            0,
+            0
+          ],
+          [
+            0,
+            144,
+            32772,
+            0,
+            0
+          ],
+          [
+            0,
+            0,
+            0,
+            180549,
+            0
+          ],
+          [
+            0,
+            0,
+            0,
+            0,
+            202765
+          ]
+        ],
+        "evaluated_pixels": 639541,
+        "macro_f1": 0.9985877353931862,
+        "macro_iou": 0.9971868263094892,
+        "overall_accuracy": 0.9997748385169989,
+        "per_class": {
+          "0": {
+            "f1": 1.0,
+            "iou": 1.0,
+            "predicted_pixels": 208596,
+            "support_pixels": 208596
+          },
+          "1": {
+            "f1": 0.9951308581862447,
+            "iou": 0.9903089036947305,
+            "predicted_pixels": 14859,
+            "support_pixels": 14715
+          },
+          "2": {
+            "f1": 0.9978078187796858,
+            "iou": 0.995625227852716,
+            "predicted_pixels": 32772,
+            "support_pixels": 32916
+          },
+          "3": {
+            "f1": 1.0,
+            "iou": 1.0,
+            "predicted_pixels": 180549,
+            "support_pixels": 180549
+          },
+          "4": {
+            "f1": 1.0,
+            "iou": 1.0,
+            "predicted_pixels": 202765,
+            "support_pixels": 202765
+          }
+        }
+      },
+      "val": {
+        "confusion": [
+          [
+            428768,
+            0,
+            0,
+            0,
+            0
+          ],
+          [
+            0,
+            31866,
+            0,
+            0,
+            0
+          ],
+          [
+            0,
+            0,
+            101288,
+            0,
+            0
+          ],
+          [
+            0,
+            0,
+            0,
+            397713,
+            0
+          ],
+          [
+            0,
+            0,
+            0,
+            0,
+            493179
+          ]
+        ],
+        "evaluated_pixels": 1452814,
+        "macro_f1": 1.0,
+        "macro_iou": 1.0,
+        "overall_accuracy": 1.0,
+        "per_class": {
+          "0": {
+            "f1": 1.0,
+            "iou": 1.0,
+            "predicted_pixels": 428768,
+            "support_pixels": 428768
+          },
+          "1": {
+            "f1": 1.0,
+            "iou": 1.0,
+            "predicted_pixels": 31866,
+            "support_pixels": 31866
+          },
+          "2": {
+            "f1": 1.0,
+            "iou": 1.0,
+            "predicted_pixels": 101288,
+            "support_pixels": 101288
+          },
+          "3": {
+            "f1": 1.0,
+            "iou": 1.0,
+            "predicted_pixels": 397713,
+            "support_pixels": 397713
+          },
+          "4": {
+            "f1": 1.0,
+            "iou": 1.0,
+            "predicted_pixels": 493179,
+            "support_pixels": 493179
+          }
+        }
+      }
+    },
+    "outputs": {
+      "agreement": "/home/kaue/landslide_susc_modelling/IBGE_method/own_LULC/outputs_fullres/lulc_custom_ensemble_agreement_16cm.tif",
+      "confidence": "/home/kaue/landslide_susc_modelling/IBGE_method/own_LULC/outputs_fullres/lulc_custom_ensemble_confidence_16cm.tif",
+      "ensemble_lulc": "/home/kaue/landslide_susc_modelling/IBGE_method/own_LULC/outputs_fullres/lulc_custom_ensemble_16cm.tif",
+      "ensemble_probabilities": "/home/kaue/landslide_susc_modelling/IBGE_method/own_LULC/outputs_fullres/lulc_custom_ensemble_probabilities_16cm.tif",
+      "entropy": "/home/kaue/landslide_susc_modelling/IBGE_method/own_LULC/outputs_fullres/lulc_custom_ensemble_entropy_16cm.tif",
+      "margin": "/home/kaue/landslide_susc_modelling/IBGE_method/own_LULC/outputs_fullres/lulc_custom_ensemble_margin_16cm.tif"
+    },
+    "promoted_lulc": "/home/kaue/landslide_susc_modelling/IBGE_method/own_LULC/outputs_fullres/lulc_custom_16cm.tif",
+    "promoted_probabilities": "/home/kaue/landslide_susc_modelling/IBGE_method/own_LULC/outputs_fullres/lulc_custom_probabilities_16cm.tif",
+    "resolution": 0.16,
+    "run_id": "ensemble_probability_average_diverse_top_models",
+    "selection_type": "ensemble",
+    "strategy": "probability_average",
+    "voter_policy": "diverse_top_models",
+    "voter_run_ids": [
+      "fullres_unetplusplus_resnet18_focal_lovasz_rgb_indices_seed42",
+      "fullres_deeplabv3plus_resnet18_focal_dice_rgb_seed42",
+      "fullres_unet_resnet34_weighted_ce_lovasz_rgb_seed42",
+      "fullres_unet_mit_b0_focal_lovasz_rgb_seed42",
+      "fullres_fpn_resnet34_weighted_ce_lovasz_rgb_seed42"
+    ],
+    "voters": [
+      {
+        "architecture": "unetplusplus",
+        "best_epoch": 61,
+        "best_score": 0.9973474783358391,
+        "encoder": "resnet18",
+        "epochs": 100,
+        "experiment": "fullres_unetplusplus_resnet18_focal_lovasz_rgb_indices",
+        "experiment_config": {
+          "feature_set": "rgb_indices",
+          "inference_overlap": 64,
+          "inference_window_size": 256,
+          "loss": {
+            "name": "focal_lovasz"
+          },
+          "model": {
+            "architecture": "unetplusplus",
+            "encoder": "resnet18"
+          },
+          "resolution": 0.16,
+          "seeds": [
+            42
+          ],
+          "stride": 96,
+          "tile_size": 192
+        },
+        "feature_set": "rgb_indices",
+        "loss": "focal_lovasz",
+        "output_dir": "/home/kaue/landslide_susc_modelling/IBGE_method/own_LULC/outputs_fullres/experiments/fullres_unetplusplus_resnet18_focal_lovasz_rgb_indices_seed42",
+        "resolution": 0.16,
+        "run_id": "fullres_unetplusplus_resnet18_focal_lovasz_rgb_indices_seed42",
+        "seed": 42,
+        "stride": 96,
+        "test_macro_f1": 0.9879718124295014,
+        "test_macro_iou": 0.9767295962254448,
+        "test_overall_accuracy": 0.9980392187521988,
+        "tile_size": 192,
+        "val_macro_f1": 0.9986668794929725,
+        "val_macro_iou": 0.9973474783358391,
+        "val_overall_accuracy": 0.9996276192272376
+      },
+      {
+        "architecture": "deeplabv3plus",
+        "best_epoch": 68,
+        "best_score": 0.9977573493109675,
+        "encoder": "resnet18",
+        "epochs": 100,
+        "experiment": "fullres_deeplabv3plus_resnet18_focal_dice_rgb",
+        "experiment_config": {
+          "feature_set": "rgb",
+          "inference_overlap": 64,
+          "inference_window_size": 256,
+          "loss": {
+            "name": "focal_dice"
+          },
+          "model": {
+            "architecture": "deeplabv3plus",
+            "encoder": "resnet18"
+          },
+          "resolution": 0.16,
+          "seeds": [
+            42
+          ],
+          "stride": 96,
+          "tile_size": 192
+        },
+        "feature_set": "rgb",
+        "loss": "focal_dice",
+        "output_dir": "/home/kaue/landslide_susc_modelling/IBGE_method/own_LULC/outputs_fullres/experiments/fullres_deeplabv3plus_resnet18_focal_dice_rgb_seed42",
+        "resolution": 0.16,
+        "run_id": "fullres_deeplabv3plus_resnet18_focal_dice_rgb_seed42",
+        "seed": 42,
+        "stride": 96,
+        "test_macro_f1": 0.9995920850427407,
+        "test_macro_iou": 0.9991846794219663,
+        "test_overall_accuracy": 0.9995825130836021,
+        "tile_size": 192,
+        "val_macro_f1": 0.9988743548855906,
+        "val_macro_iou": 0.9977573493109675,
+        "val_overall_accuracy": 0.9996544636822057
+      },
+      {
+        "architecture": "unet",
+        "best_epoch": 100,
+        "best_score": 0.9991879038711279,
+        "encoder": "resnet34",
+        "epochs": 100,
+        "experiment": "fullres_unet_resnet34_weighted_ce_lovasz_rgb",
+        "experiment_config": {
+          "feature_set": "rgb",
+          "inference_overlap": 64,
+          "inference_window_size": 256,
+          "loss": {
+            "name": "weighted_ce_lovasz"
+          },
+          "model": {
+            "architecture": "unet",
+            "encoder": "resnet34"
+          },
+          "resolution": 0.16,
+          "seeds": [
+            42
+          ],
+          "stride": 96,
+          "tile_size": 192
+        },
+        "feature_set": "rgb",
+        "loss": "weighted_ce_lovasz",
+        "output_dir": "/home/kaue/landslide_susc_modelling/IBGE_method/own_LULC/outputs_fullres/experiments/fullres_unet_resnet34_weighted_ce_lovasz_rgb_seed42",
+        "resolution": 0.16,
+        "run_id": "fullres_unet_resnet34_weighted_ce_lovasz_rgb_seed42",
+        "seed": 42,
+        "stride": 96,
+        "test_macro_f1": 0.9977827611178558,
+        "test_macro_iou": 0.9955777447748158,
+        "test_overall_accuracy": 0.9973652979246053,
+        "tile_size": 192,
+        "val_macro_f1": 0.9995937209259805,
+        "val_macro_iou": 0.9991879038711279,
+        "val_overall_accuracy": 0.9997012693985603
+      },
+      {
+        "architecture": "unet",
+        "best_epoch": 99,
+        "best_score": 0.9907624999969888,
+        "encoder": "mit_b0",
+        "epochs": 100,
+        "experiment": "fullres_unet_mit_b0_focal_lovasz_rgb",
+        "experiment_config": {
+          "feature_set": "rgb",
+          "inference_overlap": 64,
+          "inference_window_size": 256,
+          "loss": {
+            "name": "focal_lovasz"
+          },
+          "model": {
+            "architecture": "unet",
+            "encoder": "mit_b0"
+          },
+          "resolution": 0.16,
+          "seeds": [
+            42
+          ],
+          "stride": 96,
+          "tile_size": 192
+        },
+        "feature_set": "rgb",
+        "loss": "focal_lovasz",
+        "output_dir": "/home/kaue/landslide_susc_modelling/IBGE_method/own_LULC/outputs_fullres/experiments/fullres_unet_mit_b0_focal_lovasz_rgb_seed42",
+        "resolution": 0.16,
+        "run_id": "fullres_unet_mit_b0_focal_lovasz_rgb_seed42",
+        "seed": 42,
+        "stride": 96,
+        "test_macro_f1": 0.995972071939328,
+        "test_macro_iou": 0.9920231508427211,
+        "test_overall_accuracy": 0.9990211729975091,
+        "tile_size": 192,
+        "val_macro_f1": 0.9953176494711562,
+        "val_macro_iou": 0.9907624999969888,
+        "val_overall_accuracy": 0.9970037458339471
+      },
+      {
+        "architecture": "fpn",
+        "best_epoch": 77,
+        "best_score": 0.9982628487184766,
+        "encoder": "resnet34",
+        "epochs": 100,
+        "experiment": "fullres_fpn_resnet34_weighted_ce_lovasz_rgb",
+        "experiment_config": {
+          "feature_set": "rgb",
+          "inference_overlap": 64,
+          "inference_window_size": 256,
+          "loss": {
+            "name": "weighted_ce_lovasz"
+          },
+          "model": {
+            "architecture": "fpn",
+            "encoder": "resnet34"
+          },
+          "resolution": 0.16,
+          "seeds": [
+            42
+          ],
+          "stride": 96,
+          "tile_size": 192
+        },
+        "feature_set": "rgb",
+        "loss": "weighted_ce_lovasz",
+        "output_dir": "/home/kaue/landslide_susc_modelling/IBGE_method/own_LULC/outputs_fullres/experiments/fullres_fpn_resnet34_weighted_ce_lovasz_rgb_seed42",
+        "resolution": 0.16,
+        "run_id": "fullres_fpn_resnet34_weighted_ce_lovasz_rgb_seed42",
+        "seed": 42,
+        "stride": 96,
+        "test_macro_f1": 0.9887907494589756,
+        "test_macro_iou": 0.978185035850639,
+        "test_overall_accuracy": 0.997216753890681,
+        "tile_size": 192,
+        "val_macro_f1": 0.9991302099288459,
+        "val_macro_iou": 0.9982628487184766,
+        "val_overall_accuracy": 0.9990432360921632
+      }
+    ]
+  },
+  "selected": {
+    "agreement_summary": {
+      "by_predicted_class": {
+        "1": {
+          "mean_agreement": 0.08923566341400146,
+          "mean_confidence": 0.9844790697097778,
+          "mean_entropy": 0.04093528166413307,
+          "mean_margin": 0.9748177528381348,
+          "pixels": 64849586
+        },
+        "2": {
+          "mean_agreement": 0.8505074977874756,
+          "mean_confidence": 0.812771201133728,
+          "mean_entropy": 0.29141807556152344,
+          "mean_margin": 0.6813079714775085,
+          "pixels": 846639
+        },
+        "3": {
+          "mean_agreement": 0.9308327436447144,
+          "mean_confidence": 0.9156689643859863,
+          "mean_entropy": 0.12198824435472488,
+          "mean_margin": 0.8558903932571411,
+          "pixels": 470202
+        },
+        "4": {
+          "mean_agreement": 0.9605932831764221,
+          "mean_confidence": 0.9402879476547241,
+          "mean_entropy": 0.10407375544309616,
+          "mean_margin": 0.8927902579307556,
+          "pixels": 29033553
+        },
+        "5": {
+          "mean_agreement": 0.9003928899765015,
+          "mean_confidence": 0.8703951835632324,
+          "mean_entropy": 0.19672653079032898,
+          "mean_margin": 0.7636779546737671,
+          "pixels": 8298604
+        }
+      },
+      "high_entropy_pixels": 0,
+      "low_agreement_pixels": 59551277,
+      "low_margin_pixels": 2408857,
+      "mean_agreement": 0.40876007080078125,
+      "mean_confidence": 0.961217999458313,
+      "mean_entropy": 0.07355567067861557,
+      "mean_margin": 0.9319366216659546,
+      "valid_pixels": 103498584
+    },
+    "metrics": {
+      "test": {
+        "confusion": [
+          [
+            208596,
+            0,
+            0,
+            0,
+            0
+          ],
+          [
+            0,
+            14715,
+            0,
+            0,
+            0
+          ],
+          [
+            0,
+            144,
+            32772,
+            0,
+            0
+          ],
+          [
+            0,
+            0,
+            0,
+            180549,
+            0
+          ],
+          [
+            0,
+            0,
+            0,
+            0,
+            202765
+          ]
+        ],
+        "evaluated_pixels": 639541,
+        "macro_f1": 0.9985877353931862,
+        "macro_iou": 0.9971868263094892,
+        "overall_accuracy": 0.9997748385169989,
+        "per_class": {
+          "0": {
+            "f1": 1.0,
+            "iou": 1.0,
+            "predicted_pixels": 208596,
+            "support_pixels": 208596
+          },
+          "1": {
+            "f1": 0.9951308581862447,
+            "iou": 0.9903089036947305,
+            "predicted_pixels": 14859,
+            "support_pixels": 14715
+          },
+          "2": {
+            "f1": 0.9978078187796858,
+            "iou": 0.995625227852716,
+            "predicted_pixels": 32772,
+            "support_pixels": 32916
+          },
+          "3": {
+            "f1": 1.0,
+            "iou": 1.0,
+            "predicted_pixels": 180549,
+            "support_pixels": 180549
+          },
+          "4": {
+            "f1": 1.0,
+            "iou": 1.0,
+            "predicted_pixels": 202765,
+            "support_pixels": 202765
+          }
+        }
+      },
+      "val": {
+        "confusion": [
+          [
+            428768,
+            0,
+            0,
+            0,
+            0
+          ],
+          [
+            0,
+            31866,
+            0,
+            0,
+            0
+          ],
+          [
+            0,
+            0,
+            101288,
+            0,
+            0
+          ],
+          [
+            0,
+            0,
+            0,
+            397713,
+            0
+          ],
+          [
+            0,
+            0,
+            0,
+            0,
+            493179
+          ]
+        ],
+        "evaluated_pixels": 1452814,
+        "macro_f1": 1.0,
+        "macro_iou": 1.0,
+        "overall_accuracy": 1.0,
+        "per_class": {
+          "0": {
+            "f1": 1.0,
+            "iou": 1.0,
+            "predicted_pixels": 428768,
+            "support_pixels": 428768
+          },
+          "1": {
+            "f1": 1.0,
+            "iou": 1.0,
+            "predicted_pixels": 31866,
+            "support_pixels": 31866
+          },
+          "2": {
+            "f1": 1.0,
+            "iou": 1.0,
+            "predicted_pixels": 101288,
+            "support_pixels": 101288
+          },
+          "3": {
+            "f1": 1.0,
+            "iou": 1.0,
+            "predicted_pixels": 397713,
+            "support_pixels": 397713
+          },
+          "4": {
+            "f1": 1.0,
+            "iou": 1.0,
+            "predicted_pixels": 493179,
+            "support_pixels": 493179
+          }
+        }
+      }
+    },
+    "outputs": {
+      "agreement": "/home/kaue/landslide_susc_modelling/IBGE_method/own_LULC/outputs_fullres/lulc_custom_ensemble_agreement_16cm.tif",
+      "confidence": "/home/kaue/landslide_susc_modelling/IBGE_method/own_LULC/outputs_fullres/lulc_custom_ensemble_confidence_16cm.tif",
+      "ensemble_lulc": "/home/kaue/landslide_susc_modelling/IBGE_method/own_LULC/outputs_fullres/lulc_custom_ensemble_16cm.tif",
+      "ensemble_probabilities": "/home/kaue/landslide_susc_modelling/IBGE_method/own_LULC/outputs_fullres/lulc_custom_ensemble_probabilities_16cm.tif",
+      "entropy": "/home/kaue/landslide_susc_modelling/IBGE_method/own_LULC/outputs_fullres/lulc_custom_ensemble_entropy_16cm.tif",
+      "margin": "/home/kaue/landslide_susc_modelling/IBGE_method/own_LULC/outputs_fullres/lulc_custom_ensemble_margin_16cm.tif"
+    },
+    "promoted_lulc": "/home/kaue/landslide_susc_modelling/IBGE_method/own_LULC/outputs_fullres/lulc_custom_16cm.tif",
+    "promoted_probabilities": "/home/kaue/landslide_susc_modelling/IBGE_method/own_LULC/outputs_fullres/lulc_custom_probabilities_16cm.tif",
+    "resolution": 0.16,
+    "run_id": "ensemble_probability_average_diverse_top_models",
+    "selection_type": "ensemble",
+    "strategy": "probability_average",
+    "voter_policy": "diverse_top_models",
+    "voter_run_ids": [
+      "fullres_unetplusplus_resnet18_focal_lovasz_rgb_indices_seed42",
+      "fullres_deeplabv3plus_resnet18_focal_dice_rgb_seed42",
+      "fullres_unet_resnet34_weighted_ce_lovasz_rgb_seed42",
+      "fullres_unet_mit_b0_focal_lovasz_rgb_seed42",
+      "fullres_fpn_resnet34_weighted_ce_lovasz_rgb_seed42"
+    ],
+    "voters": [
+      {
+        "architecture": "unetplusplus",
+        "best_epoch": 61,
+        "best_score": 0.9973474783358391,
+        "encoder": "resnet18",
+        "epochs": 100,
+        "experiment": "fullres_unetplusplus_resnet18_focal_lovasz_rgb_indices",
+        "experiment_config": {
+          "feature_set": "rgb_indices",
+          "inference_overlap": 64,
+          "inference_window_size": 256,
+          "loss": {
+            "name": "focal_lovasz"
+          },
+          "model": {
+            "architecture": "unetplusplus",
+            "encoder": "resnet18"
+          },
+          "resolution": 0.16,
+          "seeds": [
+            42
+          ],
+          "stride": 96,
+          "tile_size": 192
+        },
+        "feature_set": "rgb_indices",
+        "loss": "focal_lovasz",
+        "output_dir": "/home/kaue/landslide_susc_modelling/IBGE_method/own_LULC/outputs_fullres/experiments/fullres_unetplusplus_resnet18_focal_lovasz_rgb_indices_seed42",
+        "resolution": 0.16,
+        "run_id": "fullres_unetplusplus_resnet18_focal_lovasz_rgb_indices_seed42",
+        "seed": 42,
+        "stride": 96,
+        "test_macro_f1": 0.9879718124295014,
+        "test_macro_iou": 0.9767295962254448,
+        "test_overall_accuracy": 0.9980392187521988,
+        "tile_size": 192,
+        "val_macro_f1": 0.9986668794929725,
+        "val_macro_iou": 0.9973474783358391,
+        "val_overall_accuracy": 0.9996276192272376
+      },
+      {
+        "architecture": "deeplabv3plus",
+        "best_epoch": 68,
+        "best_score": 0.9977573493109675,
+        "encoder": "resnet18",
+        "epochs": 100,
+        "experiment": "fullres_deeplabv3plus_resnet18_focal_dice_rgb",
+        "experiment_config": {
+          "feature_set": "rgb",
+          "inference_overlap": 64,
+          "inference_window_size": 256,
+          "loss": {
+            "name": "focal_dice"
+          },
+          "model": {
+            "architecture": "deeplabv3plus",
+            "encoder": "resnet18"
+          },
+          "resolution": 0.16,
+          "seeds": [
+            42
+          ],
+          "stride": 96,
+          "tile_size": 192
+        },
+        "feature_set": "rgb",
+        "loss": "focal_dice",
+        "output_dir": "/home/kaue/landslide_susc_modelling/IBGE_method/own_LULC/outputs_fullres/experiments/fullres_deeplabv3plus_resnet18_focal_dice_rgb_seed42",
+        "resolution": 0.16,
+        "run_id": "fullres_deeplabv3plus_resnet18_focal_dice_rgb_seed42",
+        "seed": 42,
+        "stride": 96,
+        "test_macro_f1": 0.9995920850427407,
+        "test_macro_iou": 0.9991846794219663,
+        "test_overall_accuracy": 0.9995825130836021,
+        "tile_size": 192,
+        "val_macro_f1": 0.9988743548855906,
+        "val_macro_iou": 0.9977573493109675,
+        "val_overall_accuracy": 0.9996544636822057
+      },
+      {
+        "architecture": "unet",
+        "best_epoch": 100,
+        "best_score": 0.9991879038711279,
+        "encoder": "resnet34",
+        "epochs": 100,
+        "experiment": "fullres_unet_resnet34_weighted_ce_lovasz_rgb",
+        "experiment_config": {
+          "feature_set": "rgb",
+          "inference_overlap": 64,
+          "inference_window_size": 256,
+          "loss": {
+            "name": "weighted_ce_lovasz"
+          },
+          "model": {
+            "architecture": "unet",
+            "encoder": "resnet34"
+          },
+          "resolution": 0.16,
+          "seeds": [
+            42
+          ],
+          "stride": 96,
+          "tile_size": 192
+        },
+        "feature_set": "rgb",
+        "loss": "weighted_ce_lovasz",
+        "output_dir": "/home/kaue/landslide_susc_modelling/IBGE_method/own_LULC/outputs_fullres/experiments/fullres_unet_resnet34_weighted_ce_lovasz_rgb_seed42",
+        "resolution": 0.16,
+        "run_id": "fullres_unet_resnet34_weighted_ce_lovasz_rgb_seed42",
+        "seed": 42,
+        "stride": 96,
+        "test_macro_f1": 0.9977827611178558,
+        "test_macro_iou": 0.9955777447748158,
+        "test_overall_accuracy": 0.9973652979246053,
+        "tile_size": 192,
+        "val_macro_f1": 0.9995937209259805,
+        "val_macro_iou": 0.9991879038711279,
+        "val_overall_accuracy": 0.9997012693985603
+      },
+      {
+        "architecture": "unet",
+        "best_epoch": 99,
+        "best_score": 0.9907624999969888,
+        "encoder": "mit_b0",
+        "epochs": 100,
+        "experiment": "fullres_unet_mit_b0_focal_lovasz_rgb",
+        "experiment_config": {
+          "feature_set": "rgb",
+          "inference_overlap": 64,
+          "inference_window_size": 256,
+          "loss": {
+            "name": "focal_lovasz"
+          },
+          "model": {
+            "architecture": "unet",
+            "encoder": "mit_b0"
+          },
+          "resolution": 0.16,
+          "seeds": [
+            42
+          ],
+          "stride": 96,
+          "tile_size": 192
+        },
+        "feature_set": "rgb",
+        "loss": "focal_lovasz",
+        "output_dir": "/home/kaue/landslide_susc_modelling/IBGE_method/own_LULC/outputs_fullres/experiments/fullres_unet_mit_b0_focal_lovasz_rgb_seed42",
+        "resolution": 0.16,
+        "run_id": "fullres_unet_mit_b0_focal_lovasz_rgb_seed42",
+        "seed": 42,
+        "stride": 96,
+        "test_macro_f1": 0.995972071939328,
+        "test_macro_iou": 0.9920231508427211,
+        "test_overall_accuracy": 0.9990211729975091,
+        "tile_size": 192,
+        "val_macro_f1": 0.9953176494711562,
+        "val_macro_iou": 0.9907624999969888,
+        "val_overall_accuracy": 0.9970037458339471
+      },
+      {
+        "architecture": "fpn",
+        "best_epoch": 77,
+        "best_score": 0.9982628487184766,
+        "encoder": "resnet34",
+        "epochs": 100,
+        "experiment": "fullres_fpn_resnet34_weighted_ce_lovasz_rgb",
+        "experiment_config": {
+          "feature_set": "rgb",
+          "inference_overlap": 64,
+          "inference_window_size": 256,
+          "loss": {
+            "name": "weighted_ce_lovasz"
+          },
+          "model": {
+            "architecture": "fpn",
+            "encoder": "resnet34"
+          },
+          "resolution": 0.16,
+          "seeds": [
+            42
+          ],
+          "stride": 96,
+          "tile_size": 192
+        },
+        "feature_set": "rgb",
+        "loss": "weighted_ce_lovasz",
+        "output_dir": "/home/kaue/landslide_susc_modelling/IBGE_method/own_LULC/outputs_fullres/experiments/fullres_fpn_resnet34_weighted_ce_lovasz_rgb_seed42",
+        "resolution": 0.16,
+        "run_id": "fullres_fpn_resnet34_weighted_ce_lovasz_rgb_seed42",
+        "seed": 42,
+        "stride": 96,
+        "test_macro_f1": 0.9887907494589756,
+        "test_macro_iou": 0.978185035850639,
+        "test_overall_accuracy": 0.997216753890681,
+        "tile_size": 192,
+        "val_macro_f1": 0.9991302099288459,
+        "val_macro_iou": 0.9982628487184766,
+        "val_overall_accuracy": 0.9990432360921632
+      }
+    ]
+  },
+  "sweep_run_count": 5,
+  "markdown": "# Descrição completa do método LULC\n\nEsta aba documenta o método de geração da camada LULC usada como tema USOVEG no produto IBGE adaptado. O objetivo do LULC foi substituir uma base regional ou nacional de uso e cobertura da terra por um produto local treinado com polígonos interpretados sobre ortofoto de drone.\n\nA implementação está versionada no repositório, principalmente em `IBGE_method/own_LULC/lulc_inputs.py` e nos módulos de `IBGE_method/own_LULC/implementation/`. O arquivo `lulc_inputs.py` é a superfície única de hiperparâmetros: entradas, classes, resolução, divisão espacial, modelos, perdas, treino, inferência e ensemble ficam declarados ali.\n\n## Entradas e codificação de classes\n\n- Polígonos de treinamento: `IBGE_method/own_LULC/extra_data/Classes_Uso_Solo.gpkg`.\n- Ortofoto RGB/RGBA: `/home/kaue/data/landslide/feb26/Ortho_4_GNSS-AAT_16cm.tif`.\n- Campo textual: `Classe`.\n- Campo numérico: `Class_num`.\n- Pixels ignorados no treinamento: `255`.\n- Nodata no raster LULC final: `0`.\n\nAs classes usadas no raster final são os códigos originais 1 a 5. Internamente, durante o treinamento, elas são convertidas para índices 0 a 4 porque a função de perda multiclasse espera classes contíguas. Na escrita do GeoTIFF final, a codificação volta para 1 a 5.\n\n- Classe 1: `artif`, nota IBGE USOVEG 10,0.\n- Classe 2: `descob`, nota IBGE USOVEG 5,0.\n- Classe 3: `corpo_agua`, nota IBGE USOVEG 0,0.\n- Classe 4: `veg_campestre`, nota IBGE USOVEG 2,0.\n- Classe 5: `veg_florestal`, nota IBGE USOVEG 1,0.\n\n## Conjuntos de variáveis\n\nForam previstos dois conjuntos de atributos derivados apenas da ortofoto, sem insumos externos adicionais:\n\n- `rgb`: red, green, blue.\n- `rgb_indices`: red, green, blue, hue, saturation, value, brightness, excess_green, local_texture.\n\nO conjunto `rgb_indices` amplia o RGB com HSV, brilho, excesso de verde e textura local. Ele foi incluído para ajudar a separar vegetação, solo exposto, água e superfícies artificiais quando a assinatura espectral RGB pura é ambígua.\n\n## Divisão espacial e desenho de avaliação\n\n- Estratégia de split: `stratified_spatial_blocks`.\n- Percentuais por classe: treino 50,00%, validação 35,00%, teste 15,00%.\n- Exigência de todas as classes em cada split: `True`.\n- Tentativas máximas de seeds para achar split viável: `400`.\n\nA divisão não é uma amostragem aleatória simples de pixels. Ela usa blocos espaciais para reduzir vazamento espacial entre treino, validação e teste. Além disso, as metas de proporção são aplicadas por classe: a ideia é que cada classe tenha suporte próprio em treino, validação e teste, evitando avaliações artificialmente boas ou ruins por ausência de uma classe minoritária.\n\n## Amostragem balanceada e aumento de dados\n\n- Sampler: `class_balanced_weighted`.\n- Potência para classes raras: `1.0`.\n- Peso máximo por tile: `20.0`.\n- Otimizador: `adamw`.\n- Scheduler: `cosine`.\n- Taxa de aprendizado: `0.0003`.\n- Decaimento de peso: `0.0001`.\n- Batch size: `8`.\n- Épocas: `100`.\n- Early stopping patience: `100`.\n- Aumentos: flips com probabilidade 0.5, rotações de 90 graus `True`, brilho 0.08, contraste 0.12.\n\nO sampler pondera tiles com maior presença de classes raras. Isso aumenta a frequência com que água, solo exposto ou outras classes de menor área aparecem nos batches de treinamento, sem alterar a avaliação. A validação e o teste continuam feitos nos blocos espaciais mantidos fora do treino.\n\n## Inferência full-resolution\n\n- Janela de inferência: `256` pixels.\n- Sobreposição: `64` pixels.\n- Batch de inferência: `8`.\n- CUDA habilitado quando disponível: `True`.\n\nA inferência percorre a ortofoto em janelas sobrepostas. Para cada pixel, as probabilidades acumuladas nas janelas que o cobrem são médias antes da decisão final. O resultado individual de cada modelo inclui um raster de classes e um raster multibanda de probabilidades, com cinco bandas, uma por classe.\n\n## Os cinco modelos full-res\n\n- Modelo 1: U-Net++ / resnet18.\n- Identificador: `fullres_unetplusplus_resnet18_focal_lovasz_rgb_indices_seed42`.\n- Configuração: resolução 0,16 m; feature set `rgb_indices`; perda `focal_lovasz`; tile 192; stride 96; seed 42.\n- Treinamento: 100 épocas planejadas/executadas; melhor época 61.\n- Validação: macro IoU 0,9973, macro F1 0,9987, acurácia global 0,9996.\n- Teste final: macro IoU 0,9767, macro F1 0,9880, acurácia global 0,9980.\n\n- Modelo 2: DeepLabV3+ / resnet18.\n- Identificador: `fullres_deeplabv3plus_resnet18_focal_dice_rgb_seed42`.\n- Configuração: resolução 0,16 m; feature set `rgb`; perda `focal_dice`; tile 192; stride 96; seed 42.\n- Treinamento: 100 épocas planejadas/executadas; melhor época 68.\n- Validação: macro IoU 0,9978, macro F1 0,9989, acurácia global 0,9997.\n- Teste final: macro IoU 0,9992, macro F1 0,9996, acurácia global 0,9996.\n\n- Modelo 3: U-Net / resnet34.\n- Identificador: `fullres_unet_resnet34_weighted_ce_lovasz_rgb_seed42`.\n- Configuração: resolução 0,16 m; feature set `rgb`; perda `weighted_ce_lovasz`; tile 192; stride 96; seed 42.\n- Treinamento: 100 épocas planejadas/executadas; melhor época 100.\n- Validação: macro IoU 0,9992, macro F1 0,9996, acurácia global 0,9997.\n- Teste final: macro IoU 0,9956, macro F1 0,9978, acurácia global 0,9974.\n\n- Modelo 4: U-Net / mit_b0.\n- Identificador: `fullres_unet_mit_b0_focal_lovasz_rgb_seed42`.\n- Configuração: resolução 0,16 m; feature set `rgb`; perda `focal_lovasz`; tile 192; stride 96; seed 42.\n- Treinamento: 100 épocas planejadas/executadas; melhor época 99.\n- Validação: macro IoU 0,9908, macro F1 0,9953, acurácia global 0,9970.\n- Teste final: macro IoU 0,9920, macro F1 0,9960, acurácia global 0,9990.\n\n- Modelo 5: FPN / resnet34.\n- Identificador: `fullres_fpn_resnet34_weighted_ce_lovasz_rgb_seed42`.\n- Configuração: resolução 0,16 m; feature set `rgb`; perda `weighted_ce_lovasz`; tile 192; stride 96; seed 42.\n- Treinamento: 100 épocas planejadas/executadas; melhor época 77.\n- Validação: macro IoU 0,9983, macro F1 0,9991, acurácia global 0,9990.\n- Teste final: macro IoU 0,9782, macro F1 0,9888, acurácia global 0,9972.\n\n## Ensemble\n\n- Tipo de seleção: `ensemble`.\n- Estratégia: `probability_average`.\n- Política de votantes: `diverse_top_models`.\n- Número de votantes: `5`.\n- Validação do ensemble: macro IoU 1,0000, macro F1 1,0000, acurácia global 1,0000, pixels avaliados 1.452.814.\n- Teste final do ensemble: macro IoU 0,9972, macro F1 0,9986, acurácia global 0,9998, pixels avaliados 639.541.\n- Concordância média entre votos duros: 0,4088.\n- Confiança média da probabilidade média: 0,9612.\n- Margem média entre as duas maiores probabilidades: 0,9319.\n- Entropia média normalizada: 0,0736.\n\nO ensemble usa média de probabilidades. Esse método é preferido ao voto majoritário simples porque preserva a confiança de cada modelo. Em cada pixel, as cinco distribuições de probabilidade são somadas e normalizadas; a classe final é a classe com maior probabilidade média. A concordância por voto duro é gravada como diagnóstico separado, junto com confiança, margem e entropia.\n\n## Observação sobre placeholders\n\nMétricas lidas dos artefatos locais em outputs_fullres/.\n"
+}

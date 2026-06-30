@@ -18,6 +18,7 @@ from PIL import Image
 from rasterio.enums import Resampling
 from rasterio.warp import transform
 
+from IBGE_method.own_LULC import lulc_inputs
 from src.three_method_comparison import (
     IBGE_WEIGHTS,
     ROOT,
@@ -36,6 +37,9 @@ DTM_SENSITIVITY_ROOT = ROOT / "IBGE_method" / "dtm_sensitivity" / "DTM_OTJC_3_1_
 DTM_SENSITIVITY_COMPARISON = DTM_SENSITIVITY_ROOT / "comparison"
 DTM_SENSITIVITY_OUTPUTS = DTM_SENSITIVITY_ROOT / "outputs"
 ALT_DTM = Path("/home/kaue/data/landslide/DTM_OTJC_3_1_16cm.tif")
+LULC_ROOT = ROOT / "IBGE_method" / "own_LULC"
+LULC_FULLRES_OUTPUTS = LULC_ROOT / "outputs_fullres"
+LULC_STANDARD_OUTPUTS = LULC_ROOT / "outputs"
 
 THEME_RASTERS = {
     "dtm": FINAL_DTM,
@@ -85,6 +89,12 @@ LULC_NAMES = {
 
 def read_json(path: Path) -> Dict[str, Any]:
     return json.loads(path.read_text(encoding="utf-8"))
+
+
+def read_json_if_exists(path: Path) -> Optional[Dict[str, Any]]:
+    if not path.exists():
+        return None
+    return read_json(path)
 
 
 def escape(value: Any) -> str:
@@ -472,6 +482,313 @@ def fmt_area(value: float) -> str:
     return f"{float(value):,.2f}".replace(",", "X").replace(".", ",").replace("X", ".")
 
 
+def fmt_optional_number(value: Any, digits: int = 4) -> str:
+    if value is None:
+        return "pendente"
+    try:
+        numeric = float(value)
+    except (TypeError, ValueError):
+        return "pendente"
+    if not math.isfinite(numeric):
+        return "pendente"
+    return fmt_number(numeric, digits)
+
+
+def fmt_optional_int(value: Any) -> str:
+    if value is None:
+        return "pendente"
+    try:
+        return fmt_int(float(value))
+    except (TypeError, ValueError, OverflowError):
+        return "pendente"
+
+
+def pct_from_fraction(value: Any) -> str:
+    if value is None:
+        return "pendente"
+    try:
+        numeric = float(value)
+    except (TypeError, ValueError):
+        return "pendente"
+    if not math.isfinite(numeric):
+        return "pendente"
+    return fmt_percent(numeric)
+
+
+def best_available_lulc_output_dir() -> Path:
+    for candidate in (LULC_FULLRES_OUTPUTS, LULC_STANDARD_OUTPUTS):
+        if (
+            (candidate / "selected_experiment.json").exists()
+            or (candidate / "ensemble_results.json").exists()
+            or (candidate / "sweep_results.json").exists()
+        ):
+            return candidate
+    return LULC_FULLRES_OUTPUTS
+
+
+def metric_from_run(row: Mapping[str, Any], key: str) -> Optional[float]:
+    value = row.get(key)
+    if value is None:
+        return None
+    try:
+        value_float = float(value)
+    except (TypeError, ValueError):
+        return None
+    return value_float if math.isfinite(value_float) else None
+
+
+def normalized_lulc_run(row: Mapping[str, Any]) -> Dict[str, Any]:
+    config = row.get("experiment_config", {}) or {}
+    model = config.get("model", {}) if isinstance(config, Mapping) else {}
+    loss = config.get("loss", {}) if isinstance(config, Mapping) else {}
+    return {
+        "run_id": row.get("run_id"),
+        "experiment": row.get("experiment"),
+        "architecture": row.get("architecture") or model.get("architecture"),
+        "encoder": row.get("encoder") or model.get("encoder"),
+        "feature_set": row.get("feature_set") or config.get("feature_set"),
+        "loss": row.get("loss") or loss.get("name"),
+        "resolution": row.get("resolution") or config.get("resolution"),
+        "seed": row.get("seed"),
+        "epochs": row.get("epochs"),
+        "best_epoch": row.get("best_epoch"),
+        "tile_size": row.get("tile_size") or config.get("tile_size"),
+        "stride": row.get("stride") or config.get("stride"),
+        "val_macro_iou": metric_from_run(row, "val_macro_iou"),
+        "val_macro_f1": metric_from_run(row, "val_macro_f1"),
+        "val_overall_accuracy": metric_from_run(row, "val_overall_accuracy"),
+        "test_macro_iou": metric_from_run(row, "test_macro_iou"),
+        "test_macro_f1": metric_from_run(row, "test_macro_f1"),
+        "test_overall_accuracy": metric_from_run(row, "test_overall_accuracy"),
+        "output_dir": row.get("output_dir"),
+    }
+
+
+def architecture_label(row: Mapping[str, Any]) -> str:
+    architecture = str(row.get("architecture") or "pendente")
+    encoder = str(row.get("encoder") or "pendente")
+    names = {
+        "unet": "U-Net",
+        "unetplusplus": "U-Net++",
+        "deeplabv3plus": "DeepLabV3+",
+        "fpn": "FPN",
+    }
+    return f"{names.get(architecture.lower(), architecture)} / {encoder}"
+
+
+def load_lulc_method_report() -> Dict[str, Any]:
+    output_dir = best_available_lulc_output_dir()
+    selected = read_json_if_exists(output_dir / "selected_experiment.json")
+    ensemble = read_json_if_exists(output_dir / "ensemble_results.json")
+    sweep = read_json_if_exists(output_dir / "sweep_results.json") or {"runs": []}
+    if selected and selected.get("selection_type") == "ensemble":
+        ensemble = selected
+
+    runs = list(sweep.get("runs", []))
+    voters_raw: Sequence[Mapping[str, Any]] = []
+    if ensemble and ensemble.get("voters"):
+        voters_raw = list(ensemble["voters"])
+    elif ensemble and ensemble.get("voter_run_ids"):
+        ids = {str(run_id) for run_id in ensemble["voter_run_ids"]}
+        voters_raw = [row for row in runs if str(row.get("run_id")) in ids]
+    else:
+        voters_raw = [row for row in runs if float(row.get("resolution", 0.0) or 0.0) == 0.16][:5]
+
+    voters = [normalized_lulc_run(row) for row in voters_raw]
+    for index, row in enumerate(voters, start=1):
+        row["model_order"] = index
+        row["display_name"] = architecture_label(row)
+
+    fullres_experiments = {
+        name: payload
+        for name, payload in lulc_inputs.experiment_grid.items()
+        if name.startswith("fullres_")
+    }
+    metrics_available = bool(ensemble and ensemble.get("metrics")) and all(
+        row.get("val_macro_iou") is not None and row.get("test_macro_iou") is not None
+        for row in voters
+    )
+
+    class_rows = [
+        {
+            "class_id": class_id,
+            "name": payload["name"],
+            "ibge_land_use_note": payload["ibge_land_use_note"],
+        }
+        for class_id, payload in sorted(lulc_inputs.class_definitions.items())
+    ]
+    feature_sets = {
+        name: {"channels": list(payload.get("channels", []))}
+        for name, payload in lulc_inputs.feature_sets.items()
+    }
+    report: Dict[str, Any] = {
+        "source_dir": str(output_dir),
+        "selected_experiment_path": str(output_dir / "selected_experiment.json"),
+        "ensemble_results_path": str(output_dir / "ensemble_results.json"),
+        "sweep_results_path": str(output_dir / "sweep_results.json"),
+        "metrics_available": metrics_available,
+        "metrics_note": (
+            "Métricas lidas dos artefatos locais em outputs_fullres/."
+            if metrics_available
+            else "Métricas pendentes: copie os JSONs de treinamento da máquina externa para preencher esta seção."
+        ),
+        "class_definitions": class_rows,
+        "feature_sets": feature_sets,
+        "split_constraints": dict(lulc_inputs.split_constraints),
+        "sampler": dict(lulc_inputs.sampler),
+        "ensemble_config": dict(lulc_inputs.ensemble),
+        "params": {
+            "polygons": lulc_inputs.input_polygons,
+            "orthophoto": lulc_inputs.input_ortho,
+            "class_text_field": lulc_inputs.lulc_params["class_text_field"],
+            "class_value_field": lulc_inputs.lulc_params["class_value_field"],
+            "output_nodata": lulc_inputs.lulc_params["output_nodata"],
+            "ignore_index": lulc_inputs.lulc_params["ignore_index"],
+            "train_percentage": lulc_inputs.lulc_params["train_percentage"],
+            "validation_percentage": lulc_inputs.lulc_params["validation_percentage"],
+            "test_percentage": lulc_inputs.lulc_params["test_percentage"],
+            "training": dict(lulc_inputs.lulc_params["training"]),
+            "augmentation": dict(lulc_inputs.lulc_params["augmentation"]),
+            "inference": dict(lulc_inputs.lulc_params["inference"]),
+            "postprocessing": dict(lulc_inputs.lulc_params["postprocessing"]),
+            "loss": dict(lulc_inputs.lulc_params["loss"]),
+        },
+        "fullres_experiments": fullres_experiments,
+        "voters": voters,
+        "ensemble": ensemble or {},
+        "selected": selected or {},
+        "sweep_run_count": len(runs),
+    }
+    report["markdown"] = complete_lulc_method_markdown(report)
+    return report
+
+
+def complete_lulc_method_markdown(report: Mapping[str, Any]) -> str:
+    params = report["params"]
+    training = params["training"]
+    augmentation = params["augmentation"]
+    inference = params["inference"]
+    ensemble = report.get("ensemble", {}) or {}
+    ensemble_metrics = ensemble.get("metrics", {}) if isinstance(ensemble, Mapping) else {}
+    agreement = ensemble.get("agreement_summary", {}) if isinstance(ensemble, Mapping) else {}
+    voters = list(report.get("voters", []))
+    class_lines = [
+        f"- Classe {row['class_id']}: `{row['name']}`, nota IBGE USOVEG {fmt_optional_number(row['ibge_land_use_note'], 1)}."
+        for row in report["class_definitions"]
+    ]
+    feature_lines = [
+        f"- `{name}`: {', '.join(payload['channels'])}."
+        for name, payload in report["feature_sets"].items()
+    ]
+    voter_lines = []
+    for row in voters:
+        voter_lines.extend(
+            [
+                f"- Modelo {row['model_order']}: {row['display_name']}.",
+                f"- Identificador: `{row.get('run_id') or 'pendente'}`.",
+                f"- Configuração: resolução {fmt_optional_number(row.get('resolution'), 2)} m; feature set `{row.get('feature_set') or 'pendente'}`; perda `{row.get('loss') or 'pendente'}`; tile {row.get('tile_size') or 'pendente'}; stride {row.get('stride') or 'pendente'}; seed {row.get('seed') or 'pendente'}.",
+                f"- Treinamento: {row.get('epochs') or 'pendente'} épocas planejadas/executadas; melhor época {row.get('best_epoch') or 'pendente'}.",
+                f"- Validação: macro IoU {fmt_optional_number(row.get('val_macro_iou'))}, macro F1 {fmt_optional_number(row.get('val_macro_f1'))}, acurácia global {fmt_optional_number(row.get('val_overall_accuracy'))}.",
+                f"- Teste final: macro IoU {fmt_optional_number(row.get('test_macro_iou'))}, macro F1 {fmt_optional_number(row.get('test_macro_f1'))}, acurácia global {fmt_optional_number(row.get('test_overall_accuracy'))}.",
+                "",
+            ]
+        )
+    if not voter_lines:
+        voter_lines = [
+            "- Os cinco modelos full-res ainda não têm métricas locais disponíveis nesta cópia do repositório.",
+            "- Quando os arquivos `sweep_results.json`, `ensemble_results.json` e `selected_experiment.json` forem copiados da máquina de treinamento, esta aba passa a ser preenchida automaticamente.",
+        ]
+
+    val = ensemble_metrics.get("val", {}) if isinstance(ensemble_metrics, Mapping) else {}
+    test = ensemble_metrics.get("test", {}) if isinstance(ensemble_metrics, Mapping) else {}
+    lines = [
+        "# Descrição completa do método LULC",
+        "",
+        "Esta aba documenta o método de geração da camada LULC usada como tema USOVEG no produto IBGE adaptado. O objetivo do LULC foi substituir uma base regional ou nacional de uso e cobertura da terra por um produto local treinado com polígonos interpretados sobre ortofoto de drone.",
+        "",
+        "A implementação está versionada no repositório, principalmente em `IBGE_method/own_LULC/lulc_inputs.py` e nos módulos de `IBGE_method/own_LULC/implementation/`. O arquivo `lulc_inputs.py` é a superfície única de hiperparâmetros: entradas, classes, resolução, divisão espacial, modelos, perdas, treino, inferência e ensemble ficam declarados ali.",
+        "",
+        "## Entradas e codificação de classes",
+        "",
+        f"- Polígonos de treinamento: `{params['polygons']}`.",
+        f"- Ortofoto RGB/RGBA: `{params['orthophoto']}`.",
+        f"- Campo textual: `{params['class_text_field']}`.",
+        f"- Campo numérico: `{params['class_value_field']}`.",
+        f"- Pixels ignorados no treinamento: `{params['ignore_index']}`.",
+        f"- Nodata no raster LULC final: `{params['output_nodata']}`.",
+        "",
+        "As classes usadas no raster final são os códigos originais 1 a 5. Internamente, durante o treinamento, elas são convertidas para índices 0 a 4 porque a função de perda multiclasse espera classes contíguas. Na escrita do GeoTIFF final, a codificação volta para 1 a 5.",
+        "",
+        *class_lines,
+        "",
+        "## Conjuntos de variáveis",
+        "",
+        "Foram previstos dois conjuntos de atributos derivados apenas da ortofoto, sem insumos externos adicionais:",
+        "",
+        *feature_lines,
+        "",
+        "O conjunto `rgb_indices` amplia o RGB com HSV, brilho, excesso de verde e textura local. Ele foi incluído para ajudar a separar vegetação, solo exposto, água e superfícies artificiais quando a assinatura espectral RGB pura é ambígua.",
+        "",
+        "## Divisão espacial e desenho de avaliação",
+        "",
+        f"- Estratégia de split: `{report['split_constraints']['strategy']}`.",
+        f"- Percentuais por classe: treino {fmt_percent(params['train_percentage'])}, validação {fmt_percent(params['validation_percentage'])}, teste {fmt_percent(params['test_percentage'])}.",
+        f"- Exigência de todas as classes em cada split: `{report['split_constraints']['require_all_classes_per_split']}`.",
+        f"- Tentativas máximas de seeds para achar split viável: `{report['split_constraints']['max_seed_attempts']}`.",
+        "",
+        "A divisão não é uma amostragem aleatória simples de pixels. Ela usa blocos espaciais para reduzir vazamento espacial entre treino, validação e teste. Além disso, as metas de proporção são aplicadas por classe: a ideia é que cada classe tenha suporte próprio em treino, validação e teste, evitando avaliações artificialmente boas ou ruins por ausência de uma classe minoritária.",
+        "",
+        "## Amostragem balanceada e aumento de dados",
+        "",
+        f"- Sampler: `{report['sampler']['strategy']}`.",
+        f"- Potência para classes raras: `{report['sampler']['rare_class_power']}`.",
+        f"- Peso máximo por tile: `{report['sampler']['max_weight']}`.",
+        f"- Otimizador: `{training['optimizer']}`.",
+        f"- Scheduler: `{training['scheduler']}`.",
+        f"- Taxa de aprendizado: `{training['learning_rate']}`.",
+        f"- Decaimento de peso: `{training['weight_decay']}`.",
+        f"- Batch size: `{training['batch_size']}`.",
+        f"- Épocas: `{training['epochs']}`.",
+        f"- Early stopping patience: `{training['early_stopping_patience']}`.",
+        f"- Aumentos: flips com probabilidade {augmentation['flip_probability']}, rotações de 90 graus `{augmentation['rotate90']}`, brilho {augmentation['brightness']}, contraste {augmentation['contrast']}.",
+        "",
+        "O sampler pondera tiles com maior presença de classes raras. Isso aumenta a frequência com que água, solo exposto ou outras classes de menor área aparecem nos batches de treinamento, sem alterar a avaliação. A validação e o teste continuam feitos nos blocos espaciais mantidos fora do treino.",
+        "",
+        "## Inferência full-resolution",
+        "",
+        f"- Janela de inferência: `{inference['window_size']}` pixels.",
+        f"- Sobreposição: `{inference['overlap']}` pixels.",
+        f"- Batch de inferência: `{inference['batch_size']}`.",
+        f"- CUDA habilitado quando disponível: `{inference['use_cuda']}`.",
+        "",
+        "A inferência percorre a ortofoto em janelas sobrepostas. Para cada pixel, as probabilidades acumuladas nas janelas que o cobrem são médias antes da decisão final. O resultado individual de cada modelo inclui um raster de classes e um raster multibanda de probabilidades, com cinco bandas, uma por classe.",
+        "",
+        "## Os cinco modelos full-res",
+        "",
+        *voter_lines,
+        "## Ensemble",
+        "",
+        f"- Tipo de seleção: `{ensemble.get('selection_type', 'pendente')}`.",
+        f"- Estratégia: `{ensemble.get('strategy', report['ensemble_config'].get('strategy', 'pendente'))}`.",
+        f"- Política de votantes: `{ensemble.get('voter_policy', report['ensemble_config'].get('voter_policy', 'pendente'))}`.",
+        f"- Número de votantes: `{len(voters) if voters else 'pendente'}`.",
+        f"- Validação do ensemble: macro IoU {fmt_optional_number(val.get('macro_iou'))}, macro F1 {fmt_optional_number(val.get('macro_f1'))}, acurácia global {fmt_optional_number(val.get('overall_accuracy'))}, pixels avaliados {fmt_optional_int(val.get('evaluated_pixels'))}.",
+        f"- Teste final do ensemble: macro IoU {fmt_optional_number(test.get('macro_iou'))}, macro F1 {fmt_optional_number(test.get('macro_f1'))}, acurácia global {fmt_optional_number(test.get('overall_accuracy'))}, pixels avaliados {fmt_optional_int(test.get('evaluated_pixels'))}.",
+        f"- Concordância média entre votos duros: {fmt_optional_number(agreement.get('mean_agreement'))}.",
+        f"- Confiança média da probabilidade média: {fmt_optional_number(agreement.get('mean_confidence'))}.",
+        f"- Margem média entre as duas maiores probabilidades: {fmt_optional_number(agreement.get('mean_margin'))}.",
+        f"- Entropia média normalizada: {fmt_optional_number(agreement.get('mean_entropy'))}.",
+        "",
+        "O ensemble usa média de probabilidades. Esse método é preferido ao voto majoritário simples porque preserva a confiança de cada modelo. Em cada pixel, as cinco distribuições de probabilidade são somadas e normalizadas; a classe final é a classe com maior probabilidade média. A concordância por voto duro é gravada como diagnóstico separado, junto com confiança, margem e entropia.",
+        "",
+        "## Observação sobre placeholders",
+        "",
+        report["metrics_note"],
+        "",
+    ]
+    return "\n".join(lines)
+
+
 def complete_method_markdown(config: Mapping[str, Any], summary: Mapping[str, Any], stats: Mapping[str, Any]) -> str:
     class5 = stats["class5"]["values"]
     class3 = summary.get("class_distribution", {}).get("classes", {})
@@ -823,6 +1140,193 @@ def dtm_sensitivity_section(sensitivity: Mapping[str, Any]) -> str:
     )
 
 
+def lulc_metric_table(voters: Sequence[Mapping[str, Any]]) -> str:
+    rows = []
+    for row in voters:
+        rows.append(
+            [
+                row.get("model_order"),
+                row.get("display_name"),
+                row.get("feature_set") or "pendente",
+                row.get("loss") or "pendente",
+                fmt_optional_number(row.get("resolution"), 2),
+                row.get("best_epoch") or "pendente",
+                fmt_optional_number(row.get("val_macro_iou")),
+                fmt_optional_number(row.get("val_macro_f1")),
+                fmt_optional_number(row.get("val_overall_accuracy")),
+                fmt_optional_number(row.get("test_macro_iou")),
+                fmt_optional_number(row.get("test_macro_f1")),
+                fmt_optional_number(row.get("test_overall_accuracy")),
+            ]
+        )
+    if not rows:
+        rows.append(["pendente", "pendente", "pendente", "pendente", "pendente", "pendente", "pendente", "pendente", "pendente", "pendente", "pendente", "pendente"])
+    return mapping_table(
+        rows,
+        [
+            "#",
+            "Modelo",
+            "Features",
+            "Loss",
+            "Res. (m)",
+            "Melhor época",
+            "Val IoU",
+            "Val F1",
+            "Val Acc.",
+            "Test IoU",
+            "Test F1",
+            "Test Acc.",
+        ],
+    )
+
+
+def lulc_ensemble_metric_table(ensemble: Mapping[str, Any]) -> str:
+    metrics = ensemble.get("metrics", {}) if isinstance(ensemble, Mapping) else {}
+    rows = []
+    for split_name, label in (("val", "Validação"), ("test", "Teste final")):
+        payload = metrics.get(split_name, {}) if isinstance(metrics, Mapping) else {}
+        rows.append(
+            [
+                label,
+                fmt_optional_int(payload.get("evaluated_pixels")),
+                fmt_optional_number(payload.get("macro_iou")),
+                fmt_optional_number(payload.get("macro_f1")),
+                fmt_optional_number(payload.get("overall_accuracy")),
+            ]
+        )
+    return mapping_table(rows, ["Split", "Pixels avaliados", "Macro IoU", "Macro F1", "Acurácia global"])
+
+
+def lulc_per_class_metric_table(ensemble: Mapping[str, Any], class_names: Mapping[int, str]) -> str:
+    metrics = ensemble.get("metrics", {}) if isinstance(ensemble, Mapping) else {}
+    rows = []
+    for split_name, label in (("val", "Validação"), ("test", "Teste final")):
+        payload = metrics.get(split_name, {}) if isinstance(metrics, Mapping) else {}
+        per_class = payload.get("per_class", {}) if isinstance(payload, Mapping) else {}
+        for internal_idx_str, class_metrics in sorted(per_class.items(), key=lambda item: int(item[0])):
+            final_class = int(internal_idx_str) + 1
+            rows.append(
+                [
+                    label,
+                    f"{final_class} - {class_names.get(final_class, '')}",
+                    fmt_optional_int(class_metrics.get("support_pixels")),
+                    fmt_optional_int(class_metrics.get("predicted_pixels")),
+                    fmt_optional_number(class_metrics.get("iou")),
+                    fmt_optional_number(class_metrics.get("f1")),
+                ]
+            )
+    if not rows:
+        rows.append(["pendente", "pendente", "pendente", "pendente", "pendente", "pendente"])
+    return mapping_table(rows, ["Split", "Classe final", "Suporte", "Preditos", "IoU", "F1"])
+
+
+def lulc_agreement_table(ensemble: Mapping[str, Any], class_names: Mapping[int, str]) -> str:
+    agreement = ensemble.get("agreement_summary", {}) if isinstance(ensemble, Mapping) else {}
+    by_class = agreement.get("by_predicted_class", {}) if isinstance(agreement, Mapping) else {}
+    rows = []
+    for class_id_str, payload in sorted(by_class.items(), key=lambda item: int(item[0])):
+        class_id = int(class_id_str)
+        rows.append(
+            [
+                f"{class_id} - {class_names.get(class_id, '')}",
+                fmt_optional_int(payload.get("pixels")),
+                fmt_optional_number(payload.get("mean_agreement")),
+                fmt_optional_number(payload.get("mean_confidence")),
+                fmt_optional_number(payload.get("mean_margin")),
+                fmt_optional_number(payload.get("mean_entropy")),
+            ]
+        )
+    if not rows:
+        rows.append(["pendente", "pendente", "pendente", "pendente", "pendente", "pendente"])
+    return mapping_table(rows, ["Classe prevista", "Pixels", "Concordância", "Confiança", "Margem", "Entropia"])
+
+
+def lulc_artifact_table(report: Mapping[str, Any]) -> str:
+    ensemble = report.get("ensemble", {}) if isinstance(report.get("ensemble", {}), Mapping) else {}
+    output_paths: Dict[str, Any] = {}
+    for key in ("promoted_lulc", "promoted_probabilities"):
+        if ensemble.get(key):
+            output_paths[key] = ensemble[key]
+    outputs = ensemble.get("outputs", {}) if isinstance(ensemble.get("outputs", {}), Mapping) else {}
+    output_paths.update(outputs)
+    output_paths["selected_experiment.json"] = report["selected_experiment_path"]
+    output_paths["ensemble_results.json"] = report["ensemble_results_path"]
+    output_paths["sweep_results.json"] = report["sweep_results_path"]
+
+    rows = []
+    for label, raw_path in output_paths.items():
+        path = Path(str(raw_path))
+        size = f"{path.stat().st_size / (1024 * 1024):.2f} MB" if path.exists() else "pendente"
+        rows.append([label, str(raw_path), size, "não copiado para o website"])
+    return mapping_table(rows, ["Artefato", "Caminho local", "Tamanho", "Política web"])
+
+
+def lulc_method_section(report: Mapping[str, Any], lulc_thumbnail: str) -> str:
+    class_names = {row["class_id"]: row["name"] for row in report["class_definitions"]}
+    ensemble = report.get("ensemble", {}) if isinstance(report.get("ensemble", {}), Mapping) else {}
+    agreement = ensemble.get("agreement_summary", {}) if isinstance(ensemble, Mapping) else {}
+    cards = metric_cards(
+        [
+            ["Modelos no ensemble", fmt_optional_int(len(report.get("voters", [])))],
+            ["Resolução do produto", f"{fmt_optional_number(ensemble.get('resolution'), 2)} m"],
+            ["Val macro IoU ensemble", fmt_optional_number((ensemble.get("metrics", {}).get("val", {}) if isinstance(ensemble.get("metrics", {}), Mapping) else {}).get("macro_iou"))],
+            ["Test macro IoU ensemble", fmt_optional_number((ensemble.get("metrics", {}).get("test", {}) if isinstance(ensemble.get("metrics", {}), Mapping) else {}).get("macro_iou"))],
+            ["Confiança média", fmt_optional_number(agreement.get("mean_confidence"))],
+            ["Margem média", fmt_optional_number(agreement.get("mean_margin"))],
+            ["Pixels baixa margem", fmt_optional_int(agreement.get("low_margin_pixels"))],
+            ["Pixels alta entropia", fmt_optional_int(agreement.get("high_entropy_pixels"))],
+        ]
+    )
+    class_rows = [
+        [row["class_id"], row["name"], fmt_optional_number(row["ibge_land_use_note"], 1)]
+        for row in report["class_definitions"]
+    ]
+    feature_rows = [
+        [name, ", ".join(payload["channels"])]
+        for name, payload in report["feature_sets"].items()
+    ]
+    experiment_rows = [
+        [
+            name,
+            payload["model"]["architecture"],
+            payload["model"]["encoder"],
+            payload["feature_set"],
+            payload["loss"]["name"],
+            payload["resolution"],
+            payload["tile_size"],
+            payload["stride"],
+        ]
+        for name, payload in report["fullres_experiments"].items()
+    ]
+    return (
+        "<article class=\"method-description\">"
+        f"{markdown_to_html(report['markdown'])}"
+        "<h3>Resumo numérico do produto LULC full-res</h3>"
+        f"{cards}"
+        f"<div class=\"figure inline\"><img src=\"{escape(lulc_thumbnail)}\" alt=\"LULC usado no método IBGE\"></div>"
+        "<h3>Classes finais e notas USOVEG</h3>"
+        f"{mapping_table(class_rows, ['Código final', 'Classe LULC', 'Nota IBGE USOVEG'])}"
+        "<h3>Feature sets disponíveis no código</h3>"
+        f"{mapping_table(feature_rows, ['Feature set', 'Canais'])}"
+        "<h3>Configurações full-res versionadas</h3>"
+        f"{mapping_table(experiment_rows, ['Experimento', 'Arquitetura', 'Encoder', 'Features', 'Loss', 'Resolução', 'Tile', 'Stride'])}"
+        "<h3>Métricas individuais dos cinco modelos</h3>"
+        f"{lulc_metric_table(report.get('voters', []))}"
+        "<h3>Métricas do ensemble</h3>"
+        f"{lulc_ensemble_metric_table(ensemble)}"
+        "<h3>Métricas do ensemble por classe</h3>"
+        f"{lulc_per_class_metric_table(ensemble, class_names)}"
+        "<h3>Diagnóstico de concordância do ensemble</h3>"
+        f"{lulc_agreement_table(ensemble, class_names)}"
+        "<h3>Artefatos locais</h3>"
+        "<p>Esta aba registra os caminhos dos artefatos completos, mas não copia modelos, GeoTIFFs ou probabilidades para o website.</p>"
+        f"{lulc_artifact_table(report)}"
+        "<p><a href=\"descricao_completa_metodo_lulc.md\">Abrir esta descrição em Markdown</a></p>"
+        "<p><a href=\"assets/lulc_method_report.json\">Abrir metadados LULC em JSON</a></p>"
+        "</article>"
+    )
+
+
 def build_html(
     config: Mapping[str, Any],
     summary: Mapping[str, Any],
@@ -830,6 +1334,7 @@ def build_html(
     viewer: Mapping[str, Any],
     stats: Mapping[str, Any],
     sensitivity: Mapping[str, Any],
+    lulc_report: Mapping[str, Any],
 ) -> str:
     method_description_md = complete_method_markdown(config, summary, stats)
     method_description_html = markdown_to_html(method_description_md)
@@ -861,6 +1366,7 @@ def build_html(
         ("algebra", "Álgebra IBGE"),
         ("results", "Resultados"),
         ("method_description", "Descrição completa do método"),
+        ("lulc_method_description", "Descrição completa do método LULC"),
         ("dtm_sensitivity", "Comparação com DTM tendencioso"),
         ("webviewer", "webviewer"),
     ]
@@ -998,6 +1504,7 @@ def build_html(
             "<p><a href=\"descricao_completa_metodo.md\">Abrir esta descrição em Markdown</a></p>"
             "</article>"
         ),
+        "lulc_method_description": lulc_method_section(lulc_report, thumbs["lulc"]),
         "dtm_sensitivity": dtm_sensitivity_section(sensitivity),
         "webviewer": (
             "<div class=\"viewer-shell\">"
@@ -1060,7 +1567,7 @@ def build_html(
     table {{ width:100%; border-collapse:collapse; margin:14px 0 18px; font-size:14px; }}
     th, td {{ text-align:left; border-bottom:1px solid var(--line); padding:8px 10px; vertical-align:top; }}
     th {{ background:#f0f4f8; color:#22313d; }}
-    #webviewer, #method_description, #dtm_sensitivity {{ grid-column:1 / -1; background:transparent; border:0; padding:0; }}
+    #webviewer, #method_description, #lulc_method_description, #dtm_sensitivity {{ grid-column:1 / -1; background:transparent; border:0; padding:0; }}
     .method-description {{ background:var(--panel); border:1px solid var(--line); border-radius:8px; padding:24px; max-width:1060px; }}
     .method-description h2 {{ margin-top:0; }}
     .method-description h3 {{ margin-top:24px; }}
@@ -1204,6 +1711,7 @@ def main() -> int:
     thumbnails = make_thumbnails()
     viewer = make_webviewer_asset()
     sensitivity = make_dtm_sensitivity_assets()
+    lulc_report = load_lulc_method_report()
     active_dtm = FINAL_DTM
     stats = {
         "lulc": raster_stats(THEME_RASTERS["lulc"], discrete=True, mask_path=active_dtm),
@@ -1222,15 +1730,24 @@ def main() -> int:
         "thumbnails": thumbnails,
         "webviewer": viewer,
         "dtm_sensitivity": sensitivity,
+        "lulc_method": lulc_report,
         "stats": stats,
     }
     (ASSETS / "report_data.json").write_text(json.dumps(report_data, indent=2, ensure_ascii=False), encoding="utf-8")
+    (ASSETS / "lulc_method_report.json").write_text(
+        json.dumps(lulc_report, indent=2, ensure_ascii=False),
+        encoding="utf-8",
+    )
     (WEBSITE / "descricao_completa_metodo.md").write_text(
         complete_method_markdown(config, summary, stats),
         encoding="utf-8",
     )
+    (WEBSITE / "descricao_completa_metodo_lulc.md").write_text(
+        str(lulc_report["markdown"]),
+        encoding="utf-8",
+    )
     (WEBSITE / "index.html").write_text(
-        build_html(config, summary, thumbnails, viewer, stats, sensitivity),
+        build_html(config, summary, thumbnails, viewer, stats, sensitivity, lulc_report),
         encoding="utf-8",
     )
     print(f"[ibge-website] Wrote {WEBSITE / 'index.html'}")
