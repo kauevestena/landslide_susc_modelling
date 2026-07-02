@@ -244,3 +244,9 @@ IBGE_method/website/**/*.tif
 IBGE_method/website/**/*.tiff
 IBGE_method/website/**/*.img
 IBGE_method/website/**/*.jp2
+!IBGE_method/website_lite/
+!IBGE_method/website_lite/**
+IBGE_method/website_lite/**/*.tif
+IBGE_method/website_lite/**/*.tiff
+IBGE_method/website_lite/**/*.img
+IBGE_method/website_lite/**/*.jp2

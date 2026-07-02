@@ -1,0 +1,496 @@
+{
+  "source_dir": "/home/kaue/landslide_susc_modelling/IBGE_method/own_LULC/outputs_fullres",
+  "selected_experiment_path": "/home/kaue/landslide_susc_modelling/IBGE_method/own_LULC/outputs_fullres/selected_experiment.json",
+  "ensemble_results_path": "/home/kaue/landslide_susc_modelling/IBGE_method/own_LULC/outputs_fullres/ensemble_results.json",
+  "sweep_results_path": "/home/kaue/landslide_susc_modelling/IBGE_method/own_LULC/outputs_fullres/sweep_results.json",
+  "report_mode": "best_single",
+  "single_selection_path": "/home/kaue/landslide_susc_modelling/IBGE_method/reports_lite/lulc_single_model_selection.json",
+  "metrics_available": true,
+  "metrics_note": "Métricas do modelo individual lidas dos artefatos locais em outputs_fullres/.",
+  "class_definitions": [
+    {
+      "class_id": 1,
+      "name": "artif",
+      "ibge_land_use_note": 10.0
+    },
+    {
+      "class_id": 2,
+      "name": "descob",
+      "ibge_land_use_note": 5.0
+    },
+    {
+      "class_id": 3,
+      "name": "corpo_agua",
+      "ibge_land_use_note": 0.0
+    },
+    {
+      "class_id": 4,
+      "name": "veg_campestre",
+      "ibge_land_use_note": 2.0
+    },
+    {
+      "class_id": 5,
+      "name": "veg_florestal",
+      "ibge_land_use_note": 1.0
+    }
+  ],
+  "feature_sets": {
+    "rgb": {
+      "channels": [
+        "red",
+        "green",
+        "blue"
+      ]
+    },
+    "rgb_indices": {
+      "channels": [
+        "red",
+        "green",
+        "blue",
+        "hue",
+        "saturation",
+        "value",
+        "brightness",
+        "excess_green",
+        "local_texture"
+      ]
+    }
+  },
+  "split_constraints": {
+    "strategy": "stratified_spatial_blocks",
+    "max_seed_attempts": 400,
+    "require_all_classes_per_split": true,
+    "min_val_test_pixels_per_class_cap": 20,
+    "min_val_test_class_fraction": 0.05
+  },
+  "sampler": {
+    "strategy": "class_balanced_weighted",
+    "rare_class_power": 1.0,
+    "max_weight": 20.0
+  },
+  "ensemble_config": {
+    "enabled": true,
+    "strategy": "probability_average",
+    "voter_policy": "diverse_top_models",
+    "min_val_macro_iou": 0.98,
+    "max_models": 5,
+    "exclude_smoke_runs": true,
+    "lulc_filename": "lulc_custom_ensemble_1m.tif",
+    "probabilities_filename": "lulc_custom_ensemble_probabilities_1m.tif",
+    "agreement_filename": "lulc_custom_ensemble_agreement_1m.tif",
+    "confidence_filename": "lulc_custom_ensemble_confidence_1m.tif",
+    "margin_filename": "lulc_custom_ensemble_margin_1m.tif",
+    "entropy_filename": "lulc_custom_ensemble_entropy_1m.tif",
+    "results_json_filename": "ensemble_results.json",
+    "results_csv_filename": "ensemble_results.csv",
+    "low_agreement_threshold": 0.6,
+    "low_margin_threshold": 0.2,
+    "high_entropy_threshold": 1.0
+  },
+  "params": {
+    "polygons": "IBGE_method/own_LULC/extra_data/Classes_Uso_Solo.gpkg",
+    "orthophoto": "/home/kaue/data/landslide/feb26/Ortho_4_GNSS-AAT_16cm.tif",
+    "class_text_field": "Classe",
+    "class_value_field": "Class_num",
+    "output_nodata": 0,
+    "ignore_index": 255,
+    "train_percentage": 0.5,
+    "validation_percentage": 0.35,
+    "test_percentage": 0.15,
+    "training": {
+      "epochs": 100,
+      "batch_size": 8,
+      "learning_rate": 0.0003,
+      "weight_decay": 0.0001,
+      "optimizer": "adamw",
+      "scheduler": "cosine",
+      "class_weight_strategy": "inverse_frequency",
+      "early_stopping_patience": 100,
+      "num_workers": 0,
+      "use_cuda": true,
+      "save_best_metric": "macro_iou"
+    },
+    "augmentation": {
+      "flip_probability": 0.5,
+      "rotate90": true,
+      "brightness": 0.08,
+      "contrast": 0.12,
+      "blur_enabled": false,
+      "blur_kernel_size": 3,
+      "noise_enabled": false,
+      "noise_std": 0.01
+    },
+    "inference": {
+      "window_size": 256,
+      "overlap": 64,
+      "batch_size": 8,
+      "use_cuda": true
+    },
+    "postprocessing": {
+      "smoothing_enabled": false,
+      "smoothing_sigma": 0.75,
+      "minimum_mapping_confidence": 0.0
+    },
+    "loss": {
+      "name": "weighted_ce_dice",
+      "cross_entropy_weight": 1.0,
+      "dice_weight": 0.5,
+      "focal_weight": 1.0,
+      "focal_gamma": 2.0,
+      "lovasz_weight": 0.5
+    }
+  },
+  "fullres_experiments": {
+    "fullres_unetplusplus_resnet18_focal_lovasz_rgb_indices": {
+      "resolution": 0.16,
+      "tile_size": 192,
+      "stride": 96,
+      "inference_window_size": 256,
+      "inference_overlap": 64,
+      "feature_set": "rgb_indices",
+      "model": {
+        "architecture": "unetplusplus",
+        "encoder": "resnet18"
+      },
+      "loss": {
+        "name": "focal_lovasz"
+      },
+      "seeds": [
+        42
+      ]
+    },
+    "fullres_deeplabv3plus_resnet18_focal_dice_rgb": {
+      "resolution": 0.16,
+      "tile_size": 192,
+      "stride": 96,
+      "inference_window_size": 256,
+      "inference_overlap": 64,
+      "feature_set": "rgb",
+      "model": {
+        "architecture": "deeplabv3plus",
+        "encoder": "resnet18"
+      },
+      "loss": {
+        "name": "focal_dice"
+      },
+      "seeds": [
+        42
+      ]
+    },
+    "fullres_unet_resnet34_weighted_ce_lovasz_rgb": {
+      "resolution": 0.16,
+      "tile_size": 192,
+      "stride": 96,
+      "inference_window_size": 256,
+      "inference_overlap": 64,
+      "feature_set": "rgb",
+      "model": {
+        "architecture": "unet",
+        "encoder": "resnet34"
+      },
+      "loss": {
+        "name": "weighted_ce_lovasz"
+      },
+      "seeds": [
+        42
+      ]
+    },
+    "fullres_unet_mit_b0_focal_lovasz_rgb": {
+      "resolution": 0.16,
+      "tile_size": 192,
+      "stride": 96,
+      "inference_window_size": 256,
+      "inference_overlap": 64,
+      "feature_set": "rgb",
+      "model": {
+        "architecture": "unet",
+        "encoder": "mit_b0"
+      },
+      "loss": {
+        "name": "focal_lovasz"
+      },
+      "seeds": [
+        42
+      ]
+    },
+    "fullres_fpn_resnet34_weighted_ce_lovasz_rgb": {
+      "resolution": 0.16,
+      "tile_size": 192,
+      "stride": 96,
+      "inference_window_size": 256,
+      "inference_overlap": 64,
+      "feature_set": "rgb",
+      "model": {
+        "architecture": "fpn",
+        "encoder": "resnet34"
+      },
+      "loss": {
+        "name": "weighted_ce_lovasz"
+      },
+      "seeds": [
+        42
+      ]
+    }
+  },
+  "candidate_runs": [
+    {
+      "run_id": "fullres_unet_resnet34_weighted_ce_lovasz_rgb_seed42",
+      "experiment": "fullres_unet_resnet34_weighted_ce_lovasz_rgb",
+      "architecture": "unet",
+      "encoder": "resnet34",
+      "feature_set": "rgb",
+      "loss": "weighted_ce_lovasz",
+      "resolution": 0.16,
+      "seed": 42,
+      "epochs": 100,
+      "best_epoch": 100,
+      "tile_size": 192,
+      "stride": 96,
+      "val_macro_iou": 0.9991879038711279,
+      "val_macro_f1": 0.9995937209259805,
+      "val_overall_accuracy": 0.9997012693985603,
+      "test_macro_iou": 0.9955777447748158,
+      "test_macro_f1": 0.9977827611178558,
+      "test_overall_accuracy": 0.9973652979246053,
+      "output_dir": "/home/kaue/landslide_susc_modelling/IBGE_method/own_LULC/outputs_fullres/experiments/fullres_unet_resnet34_weighted_ce_lovasz_rgb_seed42",
+      "model_order": 1,
+      "display_name": "U-Net / resnet34"
+    },
+    {
+      "run_id": "fullres_fpn_resnet34_weighted_ce_lovasz_rgb_seed42",
+      "experiment": "fullres_fpn_resnet34_weighted_ce_lovasz_rgb",
+      "architecture": "fpn",
+      "encoder": "resnet34",
+      "feature_set": "rgb",
+      "loss": "weighted_ce_lovasz",
+      "resolution": 0.16,
+      "seed": 42,
+      "epochs": 100,
+      "best_epoch": 77,
+      "tile_size": 192,
+      "stride": 96,
+      "val_macro_iou": 0.9982628487184766,
+      "val_macro_f1": 0.9991302099288459,
+      "val_overall_accuracy": 0.9990432360921632,
+      "test_macro_iou": 0.978185035850639,
+      "test_macro_f1": 0.9887907494589756,
+      "test_overall_accuracy": 0.997216753890681,
+      "output_dir": "/home/kaue/landslide_susc_modelling/IBGE_method/own_LULC/outputs_fullres/experiments/fullres_fpn_resnet34_weighted_ce_lovasz_rgb_seed42",
+      "model_order": 2,
+      "display_name": "FPN / resnet34"
+    },
+    {
+      "run_id": "fullres_deeplabv3plus_resnet18_focal_dice_rgb_seed42",
+      "experiment": "fullres_deeplabv3plus_resnet18_focal_dice_rgb",
+      "architecture": "deeplabv3plus",
+      "encoder": "resnet18",
+      "feature_set": "rgb",
+      "loss": "focal_dice",
+      "resolution": 0.16,
+      "seed": 42,
+      "epochs": 100,
+      "best_epoch": 68,
+      "tile_size": 192,
+      "stride": 96,
+      "val_macro_iou": 0.9977573493109675,
+      "val_macro_f1": 0.9988743548855906,
+      "val_overall_accuracy": 0.9996544636822057,
+      "test_macro_iou": 0.9991846794219663,
+      "test_macro_f1": 0.9995920850427407,
+      "test_overall_accuracy": 0.9995825130836021,
+      "output_dir": "/home/kaue/landslide_susc_modelling/IBGE_method/own_LULC/outputs_fullres/experiments/fullres_deeplabv3plus_resnet18_focal_dice_rgb_seed42",
+      "model_order": 3,
+      "display_name": "DeepLabV3+ / resnet18"
+    },
+    {
+      "run_id": "fullres_unetplusplus_resnet18_focal_lovasz_rgb_indices_seed42",
+      "experiment": "fullres_unetplusplus_resnet18_focal_lovasz_rgb_indices",
+      "architecture": "unetplusplus",
+      "encoder": "resnet18",
+      "feature_set": "rgb_indices",
+      "loss": "focal_lovasz",
+      "resolution": 0.16,
+      "seed": 42,
+      "epochs": 100,
+      "best_epoch": 61,
+      "tile_size": 192,
+      "stride": 96,
+      "val_macro_iou": 0.9973474783358391,
+      "val_macro_f1": 0.9986668794929725,
+      "val_overall_accuracy": 0.9996276192272376,
+      "test_macro_iou": 0.9767295962254448,
+      "test_macro_f1": 0.9879718124295014,
+      "test_overall_accuracy": 0.9980392187521988,
+      "output_dir": "/home/kaue/landslide_susc_modelling/IBGE_method/own_LULC/outputs_fullres/experiments/fullres_unetplusplus_resnet18_focal_lovasz_rgb_indices_seed42",
+      "model_order": 4,
+      "display_name": "U-Net++ / resnet18"
+    },
+    {
+      "run_id": "fullres_unet_mit_b0_focal_lovasz_rgb_seed42",
+      "experiment": "fullres_unet_mit_b0_focal_lovasz_rgb",
+      "architecture": "unet",
+      "encoder": "mit_b0",
+      "feature_set": "rgb",
+      "loss": "focal_lovasz",
+      "resolution": 0.16,
+      "seed": 42,
+      "epochs": 100,
+      "best_epoch": 99,
+      "tile_size": 192,
+      "stride": 96,
+      "val_macro_iou": 0.9907624999969888,
+      "val_macro_f1": 0.9953176494711562,
+      "val_overall_accuracy": 0.9970037458339471,
+      "test_macro_iou": 0.9920231508427211,
+      "test_macro_f1": 0.995972071939328,
+      "test_overall_accuracy": 0.9990211729975091,
+      "output_dir": "/home/kaue/landslide_susc_modelling/IBGE_method/own_LULC/outputs_fullres/experiments/fullres_unet_mit_b0_focal_lovasz_rgb_seed42",
+      "model_order": 5,
+      "display_name": "U-Net / mit_b0"
+    }
+  ],
+  "selected_single": {
+    "run_id": "fullres_unet_resnet34_weighted_ce_lovasz_rgb_seed42",
+    "experiment": "fullres_unet_resnet34_weighted_ce_lovasz_rgb",
+    "architecture": "unet",
+    "encoder": "resnet34",
+    "feature_set": "rgb",
+    "loss": "weighted_ce_lovasz",
+    "resolution": 0.16,
+    "seed": 42,
+    "epochs": 100,
+    "best_epoch": 100,
+    "tile_size": 192,
+    "stride": 96,
+    "val_macro_iou": 0.9991879038711279,
+    "val_macro_f1": 0.9995937209259805,
+    "val_overall_accuracy": 0.9997012693985603,
+    "test_macro_iou": 0.9955777447748158,
+    "test_macro_f1": 0.9977827611178558,
+    "test_overall_accuracy": 0.9973652979246053,
+    "output_dir": "/home/kaue/landslide_susc_modelling/IBGE_method/own_LULC/outputs_fullres/experiments/fullres_unet_resnet34_weighted_ce_lovasz_rgb_seed42",
+    "model_order": 1,
+    "display_name": "U-Net / resnet34"
+  },
+  "single_selection": {
+    "selection_type": "best_single_model",
+    "selection_metric": "val_macro_iou",
+    "tie_breakers": [
+      "test_macro_iou",
+      "run_id"
+    ],
+    "selected_run_id": "fullres_unet_resnet34_weighted_ce_lovasz_rgb_seed42",
+    "selected_run": {
+      "architecture": "unet",
+      "best_epoch": 100,
+      "best_score": 0.9991879038711279,
+      "encoder": "resnet34",
+      "epochs": 100,
+      "experiment": "fullres_unet_resnet34_weighted_ce_lovasz_rgb",
+      "experiment_config": {
+        "feature_set": "rgb",
+        "inference_overlap": 64,
+        "inference_window_size": 256,
+        "loss": {
+          "name": "weighted_ce_lovasz"
+        },
+        "model": {
+          "architecture": "unet",
+          "encoder": "resnet34"
+        },
+        "resolution": 0.16,
+        "seeds": [
+          42
+        ],
+        "stride": 96,
+        "tile_size": 192
+      },
+      "feature_set": "rgb",
+      "loss": "weighted_ce_lovasz",
+      "output_dir": "/home/kaue/landslide_susc_modelling/IBGE_method/own_LULC/outputs_fullres/experiments/fullres_unet_resnet34_weighted_ce_lovasz_rgb_seed42",
+      "resolution": 0.16,
+      "run_id": "fullres_unet_resnet34_weighted_ce_lovasz_rgb_seed42",
+      "seed": 42,
+      "stride": 96,
+      "test_macro_f1": 0.9977827611178558,
+      "test_macro_iou": 0.9955777447748158,
+      "test_overall_accuracy": 0.9973652979246053,
+      "tile_size": 192,
+      "val_macro_f1": 0.9995937209259805,
+      "val_macro_iou": 0.9991879038711279,
+      "val_overall_accuracy": 0.9997012693985603
+    },
+    "selected_lulc_path": "/home/kaue/landslide_susc_modelling/IBGE_method/own_LULC/outputs_fullres/experiments/fullres_unet_resnet34_weighted_ce_lovasz_rgb_seed42/lulc_custom_16cm.tif",
+    "dtm_path": "/home/kaue/data/landslide/dtm_final.tif",
+    "ensemble_used": false,
+    "note": "IBGE lite uses the best individual full-resolution LULC model, not the ensemble."
+  },
+  "voters": [
+    {
+      "run_id": "fullres_unet_resnet34_weighted_ce_lovasz_rgb_seed42",
+      "experiment": "fullres_unet_resnet34_weighted_ce_lovasz_rgb",
+      "architecture": "unet",
+      "encoder": "resnet34",
+      "feature_set": "rgb",
+      "loss": "weighted_ce_lovasz",
+      "resolution": 0.16,
+      "seed": 42,
+      "epochs": 100,
+      "best_epoch": 100,
+      "tile_size": 192,
+      "stride": 96,
+      "val_macro_iou": 0.9991879038711279,
+      "val_macro_f1": 0.9995937209259805,
+      "val_overall_accuracy": 0.9997012693985603,
+      "test_macro_iou": 0.9955777447748158,
+      "test_macro_f1": 0.9977827611178558,
+      "test_overall_accuracy": 0.9973652979246053,
+      "output_dir": "/home/kaue/landslide_susc_modelling/IBGE_method/own_LULC/outputs_fullres/experiments/fullres_unet_resnet34_weighted_ce_lovasz_rgb_seed42",
+      "model_order": 1,
+      "display_name": "U-Net / resnet34"
+    }
+  ],
+  "ensemble": {},
+  "selected": {
+    "architecture": "unet",
+    "best_epoch": 100,
+    "best_score": 0.9991879038711279,
+    "encoder": "resnet34",
+    "epochs": 100,
+    "experiment": "fullres_unet_resnet34_weighted_ce_lovasz_rgb",
+    "experiment_config": {
+      "feature_set": "rgb",
+      "inference_overlap": 64,
+      "inference_window_size": 256,
+      "loss": {
+        "name": "weighted_ce_lovasz"
+      },
+      "model": {
+        "architecture": "unet",
+        "encoder": "resnet34"
+      },
+      "resolution": 0.16,
+      "seeds": [
+        42
+      ],
+      "stride": 96,
+      "tile_size": 192
+    },
+    "feature_set": "rgb",
+    "loss": "weighted_ce_lovasz",
+    "output_dir": "/home/kaue/landslide_susc_modelling/IBGE_method/own_LULC/outputs_fullres/experiments/fullres_unet_resnet34_weighted_ce_lovasz_rgb_seed42",
+    "resolution": 0.16,
+    "run_id": "fullres_unet_resnet34_weighted_ce_lovasz_rgb_seed42",
+    "seed": 42,
+    "stride": 96,
+    "test_macro_f1": 0.9977827611178558,
+    "test_macro_iou": 0.9955777447748158,
+    "test_overall_accuracy": 0.9973652979246053,
+    "tile_size": 192,
+    "val_macro_f1": 0.9995937209259805,
+    "val_macro_iou": 0.9991879038711279,
+    "val_overall_accuracy": 0.9997012693985603
+  },
+  "sweep_run_count": 5,
+  "markdown": "# Descrição completa do método LULC Lite\n\nEsta versão lite do relatório IBGE usa uma única rede LULC individual. Ela não usa média de probabilidades, voto majoritário, concordância entre modelos ou qualquer outro componente de ensemble. O objetivo é documentar uma alternativa mais simples e mais leve: selecionar o melhor modelo individual full-resolution e usar diretamente o seu raster LULC como USOVEG no IBGE adaptado.\n\nA página principal do projeto continua documentando o produto com ensemble. Esta página lite é paralela: seus outputs IBGE, thumbnails, webviewer, tabelas e textos são derivados de `outputs_lite/`, `reports_lite/` e `configs_lite/`. Isso evita misturar resultados do ensemble com resultados do modelo único.\n\n## Critério de seleção\n\nO critério de seleção é maior macro IoU de validação entre runs full-res, excluindo smoke runs e excluindo o próprio ensemble. Em caso de empate, a ordenação usa macro IoU de teste e depois `run_id`. O teste permanece como confirmação final; ele não é o critério principal porque isso contaminaria o holdout de teste com decisão de modelo.\n\nModelo selecionado: `fullres_unet_resnet34_weighted_ce_lovasz_rgb_seed42`.\nArquitetura selecionada: U-Net / resnet34.\nFeature set: `rgb`.\nFunção de perda: `weighted_ce_lovasz`.\nTile/stride: 192 / 96.\nSeed: 42.\nMelhor época: 100.\nValidação: macro IoU 0,9992, macro F1 0,9996, acurácia global 0,9997.\nTeste final: macro IoU 0,9956, macro F1 0,9978, acurácia global 0,9974.\n\n## Comparação dos candidatos\n\nOs cinco candidatos full-res foram treinados com resolução de 16 cm, tiles de 192 pixels e stride de 96 pixels. A tabela HTML abaixo apresenta as mesmas métricas em formato tabular; a lista aqui resume a justificativa de seleção.\n\n- 1. `fullres_unet_resnet34_weighted_ce_lovasz_rgb_seed42` (selecionado): U-Net / resnet34, features `rgb`, loss `weighted_ce_lovasz`, val macro IoU 0,9992, test macro IoU 0,9956.\n- 2. `fullres_fpn_resnet34_weighted_ce_lovasz_rgb_seed42` (candidato): FPN / resnet34, features `rgb`, loss `weighted_ce_lovasz`, val macro IoU 0,9983, test macro IoU 0,9782.\n- 3. `fullres_deeplabv3plus_resnet18_focal_dice_rgb_seed42` (candidato): DeepLabV3+ / resnet18, features `rgb`, loss `focal_dice`, val macro IoU 0,9978, test macro IoU 0,9992.\n- 4. `fullres_unetplusplus_resnet18_focal_lovasz_rgb_indices_seed42` (candidato): U-Net++ / resnet18, features `rgb_indices`, loss `focal_lovasz`, val macro IoU 0,9973, test macro IoU 0,9767.\n- 5. `fullres_unet_mit_b0_focal_lovasz_rgb_seed42` (candidato): U-Net / mit_b0, features `rgb`, loss `focal_lovasz`, val macro IoU 0,9908, test macro IoU 0,9920.\n\n## Entradas e classes\n\n- Polígonos de treinamento: `IBGE_method/own_LULC/extra_data/Classes_Uso_Solo.gpkg`.\n- Ortofoto RGB/RGBA: `/home/kaue/data/landslide/feb26/Ortho_4_GNSS-AAT_16cm.tif`.\n- Campo textual: `Classe`.\n- Campo numérico: `Class_num`.\n- Pixels ignorados no treinamento: `255`.\n- Nodata no raster LULC final: `0`.\n\nO treinamento usa classes internas 0 a 4, mas o raster final usa os códigos originais 1 a 5. O valor 255 é reservado para pixels ignorados durante o treinamento; o valor 0 é nodata de saída. Essa separação evita confundir ausência de dado com uma classe semântica real.\n\n- Classe 1: `artif`, nota IBGE USOVEG 10,0.\n- Classe 2: `descob`, nota IBGE USOVEG 5,0.\n- Classe 3: `corpo_agua`, nota IBGE USOVEG 0,0.\n- Classe 4: `veg_campestre`, nota IBGE USOVEG 2,0.\n- Classe 5: `veg_florestal`, nota IBGE USOVEG 1,0.\n\nPara a álgebra IBGE, a conversão é direta: área artificial recebe nota 10, área descoberta nota 5, corpo d'água nota 0 e exclusão da máscara válida, vegetação campestre nota 2 e vegetação florestal nota 1.\n\n## Leitura técnica do modelo selecionado\n\nU-Net é a arquitetura de referência para segmentação supervisionada com poucos rótulos. O encoder `resnet34` fornece as feições profundas e o decoder reconstrói a máscara na resolução do tile. O encoder ResNet-34 aumenta a profundidade em relação ao ResNet-18. Ele foi usado para testar se mais capacidade convolucional melhora classes visualmente parecidas, como solo exposto e área artificial. O feature set RGB usa exclusivamente os três primeiros canais da ortofoto. Ele testa quanto o problema pode ser resolvido apenas pela aparência direta dos pixels. Cross-entropy ponderada preserva uma interpretação probabilística por pixel e compensa frequências de classe; Lovasz adiciona pressão direta sobre IoU. Essa combinação é um teste forte para classes raras.\n\nO modelo selecionado combina U-Net com encoder ResNet-34, feature set RGB e perda `weighted_ce_lovasz`. Essa configuração foi a melhor por validação nos artefatos disponíveis. A escolha por validação preserva a função do teste como holdout final.\n\nA U-Net reconstrói a máscara de segmentação por um decoder que recebe conexões de salto do encoder. Essas conexões preservam detalhes espaciais de bordas e objetos pequenos, relevantes em ortofoto de 16 cm. O ResNet-34 adiciona mais profundidade que o ResNet-18, aumentando capacidade para distinguir padrões visualmente próximos, como área artificial, solo descoberto e vegetação baixa.\n\nA perda `weighted_ce_lovasz` combina cross-entropy ponderada por classe com Lovasz. A cross-entropy mantém estabilidade por pixel e compensa classes raras; Lovasz adiciona pressão direta sobre IoU. Essa combinação é coerente com o critério de seleção por macro IoU, pois o objetivo não é apenas acertar muitos pixels, mas equilibrar desempenho entre as cinco classes.\n\n## Treinamento e avaliação\n\n- Otimizador: `adamw`.\n- Scheduler: `cosine`.\n- Learning rate: `0.0003`.\n- Weight decay: `0.0001`.\n- Batch size: `8`.\n- Épocas configuradas: `100`.\n- Early stopping patience: `100`.\n- Augmentation: flips 0.5, rotate90 `True`, brilho 0.08, contraste 0.12.\n\nA divisão treino/validação/teste usa blocos espaciais estratificados por classe. Essa estratégia reduz vazamento espacial e evita que classes pequenas desapareçam dos splits de validação e teste. A macro IoU é a métrica principal porque dá peso equivalente às cinco classes, mesmo quando a área de cada uma é muito diferente.\n\n## Inferência e uso no IBGE Lite\n\n- Janela de inferência: `256` pixels.\n- Sobreposição: `64` pixels.\n- Batch de inferência: `8`.\n\nO raster LULC individual selecionado é reamostrado para o grid do DTM por vizinho mais próximo, preservando classes categóricas. Em seguida, cada classe é convertida para a nota USOVEG e entra na álgebra IBGE com peso 0,10. Todos os demais temas permanecem iguais ao produto principal: DTM final, declividade derivada do drone, geologia, pedologia, geomorfologia e pluviosidade.\n\n## O que não existe nesta versão lite\n\nEsta versão não calcula agreement, confidence, margin ou entropy de ensemble. Esses diagnósticos dependem de múltiplos modelos e não fazem sentido para um único votante. A incerteza aqui deve ser inferida por inspeção visual, pelas métricas do holdout e pela comparação com o produto principal com ensemble.\n\n## Observação sobre artefatos\n\nMétricas do modelo individual lidas dos artefatos locais em outputs_fullres/.\n"
+}

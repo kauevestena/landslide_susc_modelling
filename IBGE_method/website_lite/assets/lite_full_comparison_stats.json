@@ -1,0 +1,67 @@
+{
+  "comparison": "lite_minus_complete",
+  "complete_score": "/home/kaue/landslide_susc_modelling/IBGE_method/outputs/ibge_susceptibility_score_1to10.tif",
+  "lite_score": "/home/kaue/landslide_susc_modelling/IBGE_method/outputs_lite/ibge_susceptibility_score_1to10.tif",
+  "complete_class5": "/home/kaue/landslide_susc_modelling/IBGE_method/outputs/ibge_class_map_5class.tif",
+  "lite_class5": "/home/kaue/landslide_susc_modelling/IBGE_method/outputs_lite/ibge_class_map_5class.tif",
+  "score_difference_stats": {
+    "count": 44054320,
+    "area_m2": 1127790.5920000921,
+    "mean": -0.01292762253433466,
+    "median": 0.0,
+    "std": 0.14719553291797638,
+    "min": -0.9000005722045898,
+    "max": 0.9000005722045898,
+    "p01": -0.8999998569488525,
+    "p05": 0.0,
+    "p10": 0.0,
+    "p25": 0.0,
+    "p75": 0.0,
+    "p90": 0.0,
+    "p95": 0.0,
+    "p99": 0.10000038146972656,
+    "mae": 0.02914198860526085,
+    "median_absolute_difference": 0.0,
+    "rmse": 0.1477615016693833,
+    "positive_pixels": 859264,
+    "negative_pixels": 1692045,
+    "zero_pixels_exact": 41503011,
+    "positive_fraction": 0.01950464789832189,
+    "negative_fraction": 0.038408151572876394,
+    "within_abs_threshold_fraction": {
+      "0.01": 0.9420872005288017,
+      "0.05": 0.9420872005288017,
+      "0.10": 0.9628324759070166,
+      "0.25": 0.9646761089491337,
+      "0.50": 0.9707896978094316,
+      "1.00": 1.0
+    }
+  },
+  "valid_pixel_accounting": {
+    "full_valid_pixels": 44131033,
+    "lite_valid_pixels": 44087886,
+    "common_valid_pixels": 44054320,
+    "full_only_valid_pixels": 76713,
+    "lite_only_valid_pixels": 33566,
+    "common_valid_area_m2": 1127790.5920000921,
+    "full_only_valid_area_m2": 1963.8528000001606,
+    "lite_only_valid_area_m2": 859.2896000000702
+  },
+  "class5_transition_summary": {
+    "evaluated_pixels": 44054320,
+    "unchanged_pixels": 43181906,
+    "upward_pixels": 194080,
+    "downward_pixels": 678334,
+    "changed_pixels": 872414,
+    "unchanged_fraction": 0.9801968569711211,
+    "upward_fraction": 0.00440547033752876,
+    "downward_fraction": 0.015397672691350133,
+    "changed_fraction": 0.019803143028878895
+  },
+  "assets": {
+    "histogram_png": "assets/lite_full_score_difference_histogram.png",
+    "histogram_csv": "assets/lite_full_score_difference_histogram.csv",
+    "transition_csv": "assets/lite_full_class5_transition_matrix.csv",
+    "stats_json": "assets/lite_full_comparison_stats.json"
+  }
+}

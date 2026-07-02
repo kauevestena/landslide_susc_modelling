@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import html
+import csv
 import json
 import math
 import os
@@ -13,6 +14,10 @@ from typing import Any, Dict, Iterable, Mapping, Optional, Sequence, Tuple
 
 import numpy as np
 import rasterio
+import matplotlib
+
+matplotlib.use("Agg")
+import matplotlib.pyplot as plt
 from matplotlib import colormaps
 from PIL import Image
 from rasterio.enums import Resampling
@@ -27,11 +32,22 @@ from src.three_method_comparison import (
 )
 
 
-OUTPUTS = ROOT / "IBGE_method" / "outputs"
-REPORTS = ROOT / "IBGE_method" / "reports"
-CONFIGS = ROOT / "IBGE_method" / "configs"
-WEBSITE = ROOT / "IBGE_method" / "website"
+def env_path(name: str, default: Path) -> Path:
+    return Path(os.environ.get(name, default)).expanduser().resolve()
+
+
+OUTPUTS = env_path("IBGE_WEBSITE_OUTPUTS_DIR", ROOT / "IBGE_method" / "outputs")
+REPORTS = env_path("IBGE_WEBSITE_REPORTS_DIR", ROOT / "IBGE_method" / "reports")
+CONFIGS = env_path("IBGE_WEBSITE_CONFIGS_DIR", ROOT / "IBGE_method" / "configs")
+WEBSITE = env_path("IBGE_WEBSITE_DIR", ROOT / "IBGE_method" / "website")
 ASSETS = WEBSITE / "assets"
+WEBSITE_VARIANT = os.environ.get("IBGE_WEBSITE_VARIANT", "standard").strip().lower()
+LULC_REPORT_MODE = os.environ.get("LULC_REPORT_MODE", "ensemble").strip().lower()
+LULC_SINGLE_SELECTION_PATH = env_path(
+    "IBGE_LULC_SINGLE_SELECTION_PATH",
+    REPORTS / "lulc_single_model_selection.json",
+)
+COMPLETE_IBGE_OUTPUTS = ROOT / "IBGE_method" / "outputs"
 FINAL_DTM = Path(os.environ.get("IBGE_DTM_PATH", "/home/kaue/data/landslide/dtm_final.tif")).expanduser().resolve()
 DTM_SENSITIVITY_ROOT = ROOT / "IBGE_method" / "dtm_sensitivity" / "DTM_OTJC_3_1_16cm"
 DTM_SENSITIVITY_COMPARISON = DTM_SENSITIVITY_ROOT / "comparison"
@@ -389,6 +405,229 @@ def make_dtm_sensitivity_assets() -> Dict[str, Any]:
     return result
 
 
+def same_grid(left: rasterio.io.DatasetReader, right: rasterio.io.DatasetReader) -> bool:
+    return (
+        left.crs == right.crs
+        and left.transform == right.transform
+        and left.width == right.width
+        and left.height == right.height
+    )
+
+
+def finite_score_mask(score: np.ndarray, valid: np.ndarray, nodata: Optional[float]) -> np.ndarray:
+    mask = (valid == 1) & np.isfinite(score)
+    if nodata is not None and not math.isnan(float(nodata)):
+        mask &= score != float(nodata)
+    return mask
+
+
+def write_rows_csv(path: Path, rows: Sequence[Mapping[str, Any]], fieldnames: Sequence[str]) -> str:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with path.open("w", newline="", encoding="utf-8") as f:
+        writer = csv.DictWriter(f, fieldnames=list(fieldnames))
+        writer.writeheader()
+        writer.writerows(rows)
+    return rel(path)
+
+
+def make_lite_full_comparison_assets() -> Optional[Dict[str, Any]]:
+    if WEBSITE_VARIANT != "lite":
+        return None
+    full_score_path = COMPLETE_IBGE_OUTPUTS / "ibge_susceptibility_score_1to10.tif"
+    lite_score_path = OUTPUTS / "ibge_susceptibility_score_1to10.tif"
+    full_valid_path = COMPLETE_IBGE_OUTPUTS / "ibge_valid_mask.tif"
+    lite_valid_path = OUTPUTS / "ibge_valid_mask.tif"
+    full_class_path = COMPLETE_IBGE_OUTPUTS / "ibge_class_map_5class.tif"
+    lite_class_path = OUTPUTS / "ibge_class_map_5class.tif"
+    required = [
+        full_score_path,
+        lite_score_path,
+        full_valid_path,
+        lite_valid_path,
+        full_class_path,
+        lite_class_path,
+    ]
+    missing = [str(path) for path in required if not path.exists()]
+    if missing:
+        raise FileNotFoundError(f"Não foi possível comparar lite vs completo; arquivos ausentes: {missing}")
+
+    diffs: list[np.ndarray] = []
+    transition_counts: Counter[tuple[int, int]] = Counter()
+    accounting = Counter()
+    with rasterio.open(full_score_path) as full_score, rasterio.open(lite_score_path) as lite_score, rasterio.open(
+        full_valid_path
+    ) as full_valid, rasterio.open(lite_valid_path) as lite_valid, rasterio.open(
+        full_class_path
+    ) as full_class, rasterio.open(lite_class_path) as lite_class:
+        for label, dataset in [
+            ("score lite", lite_score),
+            ("valid completo", full_valid),
+            ("valid lite", lite_valid),
+            ("classe completo", full_class),
+            ("classe lite", lite_class),
+        ]:
+            if not same_grid(full_score, dataset):
+                raise RuntimeError(f"Grid incompatível para comparação lite vs completo: {label}")
+        pixel_area = abs(float(full_score.transform.a * full_score.transform.e))
+        for _, window in full_score.block_windows(1):
+            full_arr = full_score.read(1, window=window)
+            lite_arr = lite_score.read(1, window=window)
+            full_valid_arr = full_valid.read(1, window=window)
+            lite_valid_arr = lite_valid.read(1, window=window)
+            full_mask = finite_score_mask(full_arr, full_valid_arr, full_score.nodata)
+            lite_mask = finite_score_mask(lite_arr, lite_valid_arr, lite_score.nodata)
+            common = full_mask & lite_mask
+            accounting["full_valid_pixels"] += int(np.count_nonzero(full_mask))
+            accounting["lite_valid_pixels"] += int(np.count_nonzero(lite_mask))
+            accounting["common_valid_pixels"] += int(np.count_nonzero(common))
+            accounting["full_only_valid_pixels"] += int(np.count_nonzero(full_mask & ~lite_mask))
+            accounting["lite_only_valid_pixels"] += int(np.count_nonzero(lite_mask & ~full_mask))
+            if not np.any(common):
+                continue
+            diff = (lite_arr[common].astype(np.float32) - full_arr[common].astype(np.float32)).astype(np.float32)
+            diffs.append(diff)
+
+            full_cls = full_class.read(1, window=window)
+            lite_cls = lite_class.read(1, window=window)
+            valid_class = common & (full_cls >= 1) & (full_cls <= 5) & (lite_cls >= 1) & (lite_cls <= 5)
+            if np.any(valid_class):
+                pairs = np.stack([full_cls[valid_class].astype(np.int16), lite_cls[valid_class].astype(np.int16)], axis=1)
+                unique, counts = np.unique(pairs, axis=0, return_counts=True)
+                for pair, count in zip(unique, counts):
+                    transition_counts[(int(pair[0]), int(pair[1]))] += int(count)
+
+    if not diffs:
+        raise RuntimeError("Não há pixels válidos comuns para comparar o produto lite com o completo.")
+    values = np.concatenate(diffs).astype(np.float32)
+    abs_values = np.abs(values)
+    percentiles = np.percentile(values, [1, 5, 10, 25, 50, 75, 90, 95, 99])
+    stats = {
+        "count": int(values.size),
+        "area_m2": float(values.size * pixel_area),
+        "mean": float(np.mean(values)),
+        "median": float(percentiles[4]),
+        "std": float(np.std(values)),
+        "min": float(np.min(values)),
+        "max": float(np.max(values)),
+        "p01": float(percentiles[0]),
+        "p05": float(percentiles[1]),
+        "p10": float(percentiles[2]),
+        "p25": float(percentiles[3]),
+        "p75": float(percentiles[5]),
+        "p90": float(percentiles[6]),
+        "p95": float(percentiles[7]),
+        "p99": float(percentiles[8]),
+        "mae": float(np.mean(abs_values)),
+        "median_absolute_difference": float(np.median(abs_values)),
+        "rmse": float(np.sqrt(np.mean(values.astype(np.float64) ** 2))),
+        "positive_pixels": int(np.count_nonzero(values > 0)),
+        "negative_pixels": int(np.count_nonzero(values < 0)),
+        "zero_pixels_exact": int(np.count_nonzero(values == 0)),
+        "positive_fraction": float(np.count_nonzero(values > 0) / values.size),
+        "negative_fraction": float(np.count_nonzero(values < 0) / values.size),
+        "within_abs_threshold_fraction": {
+            f"{threshold:.2f}": float(np.count_nonzero(abs_values <= threshold) / values.size)
+            for threshold in (0.01, 0.05, 0.10, 0.25, 0.50, 1.00)
+        },
+    }
+
+    transition_total = sum(transition_counts.values())
+    unchanged = sum(transition_counts[(value, value)] for value in range(1, 6))
+    upward = sum(
+        count for (full_value, lite_value), count in transition_counts.items() if lite_value > full_value
+    )
+    downward = sum(
+        count for (full_value, lite_value), count in transition_counts.items() if lite_value < full_value
+    )
+    transition_rows = []
+    for full_value in range(1, 6):
+        for lite_value in range(1, 6):
+            count = int(transition_counts[(full_value, lite_value)])
+            transition_rows.append(
+                {
+                    "classe_completo": full_value,
+                    "classe_lite": lite_value,
+                    "pixels": count,
+                    "area_m2": float(count * pixel_area),
+                    "fraction": float(count / transition_total) if transition_total else 0.0,
+                }
+            )
+    transition_summary = {
+        "evaluated_pixels": int(transition_total),
+        "unchanged_pixels": int(unchanged),
+        "upward_pixels": int(upward),
+        "downward_pixels": int(downward),
+        "changed_pixels": int(transition_total - unchanged),
+        "unchanged_fraction": float(unchanged / transition_total) if transition_total else 0.0,
+        "upward_fraction": float(upward / transition_total) if transition_total else 0.0,
+        "downward_fraction": float(downward / transition_total) if transition_total else 0.0,
+        "changed_fraction": float((transition_total - unchanged) / transition_total) if transition_total else 0.0,
+    }
+
+    hist_counts, hist_edges = np.histogram(values, bins=100)
+    hist_rows = [
+        {
+            "bin_left": float(hist_edges[idx]),
+            "bin_right": float(hist_edges[idx + 1]),
+            "count": int(count),
+            "fraction": float(count / values.size),
+        }
+        for idx, count in enumerate(hist_counts)
+    ]
+    histogram_csv = write_rows_csv(
+        ASSETS / "lite_full_score_difference_histogram.csv",
+        hist_rows,
+        ["bin_left", "bin_right", "count", "fraction"],
+    )
+    transition_csv = write_rows_csv(
+        ASSETS / "lite_full_class5_transition_matrix.csv",
+        transition_rows,
+        ["classe_completo", "classe_lite", "pixels", "area_m2", "fraction"],
+    )
+
+    histogram_png_path = ASSETS / "lite_full_score_difference_histogram.png"
+    fig, ax = plt.subplots(figsize=(10, 6), dpi=160)
+    ax.hist(values, bins=100, color="#2E6F95", edgecolor="white", linewidth=0.25)
+    ax.axvline(0.0, color="#222222", linewidth=1.2, label="Sem diferença")
+    ax.axvline(stats["mean"], color="#FDE725", linewidth=1.5, label=f"Média {stats['mean']:.4f}")
+    ax.axvline(stats["median"], color="#35B779", linewidth=1.5, label=f"Mediana {stats['median']:.4f}")
+    ax.set_title("Diferença do score IBGE 1-10: lite - completo")
+    ax.set_xlabel("Diferença no score 1-10")
+    ax.set_ylabel("Pixels válidos comuns")
+    ax.grid(True, axis="y", alpha=0.25)
+    ax.legend()
+    fig.tight_layout()
+    fig.savefig(histogram_png_path)
+    plt.close(fig)
+
+    payload = {
+        "comparison": "lite_minus_complete",
+        "complete_score": str(full_score_path),
+        "lite_score": str(lite_score_path),
+        "complete_class5": str(full_class_path),
+        "lite_class5": str(lite_class_path),
+        "score_difference_stats": stats,
+        "valid_pixel_accounting": {
+            key: int(value) for key, value in accounting.items()
+        }
+        | {
+            "common_valid_area_m2": float(accounting["common_valid_pixels"] * pixel_area),
+            "full_only_valid_area_m2": float(accounting["full_only_valid_pixels"] * pixel_area),
+            "lite_only_valid_area_m2": float(accounting["lite_only_valid_pixels"] * pixel_area),
+        },
+        "class5_transition_summary": transition_summary,
+        "assets": {
+            "histogram_png": rel(histogram_png_path),
+            "histogram_csv": histogram_csv,
+            "transition_csv": transition_csv,
+        },
+    }
+    stats_json_path = ASSETS / "lite_full_comparison_stats.json"
+    payload["assets"]["stats_json"] = rel(stats_json_path)
+    stats_json_path.write_text(json.dumps(payload, indent=2, ensure_ascii=False, allow_nan=False), encoding="utf-8")
+    return payload
+
+
 def raster_stats(
     path: Path,
     *,
@@ -537,6 +776,37 @@ def metric_from_run(row: Mapping[str, Any], key: str) -> Optional[float]:
     return value_float if math.isfinite(value_float) else None
 
 
+def run_sort_value(row: Mapping[str, Any]) -> Tuple[float, float, str]:
+    return (
+        float(row.get("val_macro_iou", -1.0) or -1.0),
+        float(row.get("test_macro_iou", -1.0) or -1.0),
+        str(row.get("run_id", "")),
+    )
+
+
+def eligible_fullres_single_runs(runs: Sequence[Mapping[str, Any]]) -> list[Mapping[str, Any]]:
+    eligible = []
+    for row in runs:
+        run_id = str(row.get("run_id", ""))
+        if run_id.startswith("smoke_"):
+            continue
+        try:
+            resolution = float(row.get("resolution", 0.0))
+        except (TypeError, ValueError):
+            continue
+        if abs(resolution - 0.16) > 1e-9:
+            continue
+        eligible.append(row)
+    return eligible
+
+
+def select_best_single_lulc_run(runs: Sequence[Mapping[str, Any]]) -> Optional[Mapping[str, Any]]:
+    eligible = eligible_fullres_single_runs(runs)
+    if not eligible:
+        return None
+    return max(eligible, key=run_sort_value)
+
+
 def normalized_lulc_run(row: Mapping[str, Any]) -> Dict[str, Any]:
     config = row.get("experiment_config", {}) or {}
     model = config.get("model", {}) if isinstance(config, Mapping) else {}
@@ -581,20 +851,40 @@ def load_lulc_method_report() -> Dict[str, Any]:
     selected = read_json_if_exists(output_dir / "selected_experiment.json")
     ensemble = read_json_if_exists(output_dir / "ensemble_results.json")
     sweep = read_json_if_exists(output_dir / "sweep_results.json") or {"runs": []}
-    if selected and selected.get("selection_type") == "ensemble":
+    if LULC_REPORT_MODE != "best_single" and selected and selected.get("selection_type") == "ensemble":
         ensemble = selected
 
     runs = list(sweep.get("runs", []))
-    voters_raw: Sequence[Mapping[str, Any]] = []
-    if ensemble and ensemble.get("voters"):
-        voters_raw = list(ensemble["voters"])
-    elif ensemble and ensemble.get("voter_run_ids"):
-        ids = {str(run_id) for run_id in ensemble["voter_run_ids"]}
-        voters_raw = [row for row in runs if str(row.get("run_id")) in ids]
-    else:
-        voters_raw = [row for row in runs if float(row.get("resolution", 0.0) or 0.0) == 0.16][:5]
+    candidate_runs = [normalized_lulc_run(row) for row in eligible_fullres_single_runs(runs)]
+    candidate_runs.sort(key=run_sort_value, reverse=True)
+    for index, row in enumerate(candidate_runs, start=1):
+        row["model_order"] = index
+        row["display_name"] = architecture_label(row)
 
-    voters = [normalized_lulc_run(row) for row in voters_raw]
+    single_selection = read_json_if_exists(LULC_SINGLE_SELECTION_PATH)
+    best_single_raw: Optional[Mapping[str, Any]]
+    if single_selection and single_selection.get("selected_run"):
+        best_single_raw = single_selection["selected_run"]
+    else:
+        best_single_raw = select_best_single_lulc_run(runs)
+
+    if LULC_REPORT_MODE == "best_single":
+        voters = [normalized_lulc_run(best_single_raw)] if best_single_raw else []
+        ensemble_payload: Dict[str, Any] = {}
+        selected_payload: Dict[str, Any] = dict(best_single_raw or {})
+    else:
+        voters_raw: Sequence[Mapping[str, Any]] = []
+        if ensemble and ensemble.get("voters"):
+            voters_raw = list(ensemble["voters"])
+        elif ensemble and ensemble.get("voter_run_ids"):
+            ids = {str(run_id) for run_id in ensemble["voter_run_ids"]}
+            voters_raw = [row for row in runs if str(row.get("run_id")) in ids]
+        else:
+            voters_raw = [row for row in runs if float(row.get("resolution", 0.0) or 0.0) == 0.16][:5]
+        voters = [normalized_lulc_run(row) for row in voters_raw]
+        ensemble_payload = ensemble or {}
+        selected_payload = selected or {}
+
     for index, row in enumerate(voters, start=1):
         row["model_order"] = index
         row["display_name"] = architecture_label(row)
@@ -604,10 +894,16 @@ def load_lulc_method_report() -> Dict[str, Any]:
         for name, payload in lulc_inputs.experiment_grid.items()
         if name.startswith("fullres_")
     }
-    metrics_available = bool(ensemble and ensemble.get("metrics")) and all(
-        row.get("val_macro_iou") is not None and row.get("test_macro_iou") is not None
-        for row in voters
-    )
+    if LULC_REPORT_MODE == "best_single":
+        metrics_available = bool(voters) and all(
+            voters[0].get(key) is not None
+            for key in ("val_macro_iou", "test_macro_iou", "val_overall_accuracy", "test_overall_accuracy")
+        )
+    else:
+        metrics_available = bool(ensemble_payload and ensemble_payload.get("metrics")) and all(
+            row.get("val_macro_iou") is not None and row.get("test_macro_iou") is not None
+            for row in voters
+        )
 
     class_rows = [
         {
@@ -626,9 +922,13 @@ def load_lulc_method_report() -> Dict[str, Any]:
         "selected_experiment_path": str(output_dir / "selected_experiment.json"),
         "ensemble_results_path": str(output_dir / "ensemble_results.json"),
         "sweep_results_path": str(output_dir / "sweep_results.json"),
+        "report_mode": LULC_REPORT_MODE,
+        "single_selection_path": str(LULC_SINGLE_SELECTION_PATH),
         "metrics_available": metrics_available,
         "metrics_note": (
-            "Métricas lidas dos artefatos locais em outputs_fullres/."
+            "Métricas do modelo individual lidas dos artefatos locais em outputs_fullres/."
+            if LULC_REPORT_MODE == "best_single" and metrics_available
+            else "Métricas lidas dos artefatos locais em outputs_fullres/."
             if metrics_available
             else "Métricas pendentes: copie os JSONs de treinamento da máquina externa para preencher esta seção."
         ),
@@ -654,9 +954,12 @@ def load_lulc_method_report() -> Dict[str, Any]:
             "loss": dict(lulc_inputs.lulc_params["loss"]),
         },
         "fullres_experiments": fullres_experiments,
+        "candidate_runs": candidate_runs,
+        "selected_single": voters[0] if LULC_REPORT_MODE == "best_single" and voters else {},
+        "single_selection": single_selection or {},
         "voters": voters,
-        "ensemble": ensemble or {},
-        "selected": selected or {},
+        "ensemble": ensemble_payload,
+        "selected": selected_payload,
         "sweep_run_count": len(runs),
     }
     report["markdown"] = complete_lulc_method_markdown(report)
@@ -744,7 +1047,120 @@ def lulc_model_narrative(row: Mapping[str, Any]) -> str:
     )
 
 
+def complete_lulc_single_method_markdown(report: Mapping[str, Any]) -> str:
+    params = report["params"]
+    training = params["training"]
+    augmentation = params["augmentation"]
+    inference = params["inference"]
+    selected = report.get("selected_single", {}) or {}
+    candidate_runs = list(report.get("candidate_runs", []))
+    class_lines = [
+        f"- Classe {row['class_id']}: `{row['name']}`, nota IBGE USOVEG {fmt_optional_number(row['ibge_land_use_note'], 1)}."
+        for row in report["class_definitions"]
+    ]
+    candidate_lines = []
+    for idx, row in enumerate(candidate_runs, start=1):
+        marker = "selecionado" if row.get("run_id") == selected.get("run_id") else "candidato"
+        candidate_lines.append(
+            f"- {idx}. `{row.get('run_id')}` ({marker}): {architecture_label(row)}, "
+            f"features `{row.get('feature_set')}`, loss `{row.get('loss')}`, "
+            f"val macro IoU {fmt_optional_number(row.get('val_macro_iou'))}, "
+            f"test macro IoU {fmt_optional_number(row.get('test_macro_iou'))}."
+        )
+    if not candidate_lines:
+        candidate_lines = ["- Métricas dos candidatos ainda não estão disponíveis nesta cópia local."]
+
+    selected_name = architecture_label(selected) if selected else "pendente"
+    selected_narrative = lulc_model_narrative(selected) if selected else ""
+    lines = [
+        "# Descrição completa do método LULC Lite",
+        "",
+        "Esta versão lite do relatório IBGE usa uma única rede LULC individual. Ela não usa média de probabilidades, voto majoritário, concordância entre modelos ou qualquer outro componente de ensemble. O objetivo é documentar uma alternativa mais simples e mais leve: selecionar o melhor modelo individual full-resolution e usar diretamente o seu raster LULC como USOVEG no IBGE adaptado.",
+        "",
+        "A página principal do projeto continua documentando o produto com ensemble. Esta página lite é paralela: seus outputs IBGE, thumbnails, webviewer, tabelas e textos são derivados de `outputs_lite/`, `reports_lite/` e `configs_lite/`. Isso evita misturar resultados do ensemble com resultados do modelo único.",
+        "",
+        "## Critério de seleção",
+        "",
+        "O critério de seleção é maior macro IoU de validação entre runs full-res, excluindo smoke runs e excluindo o próprio ensemble. Em caso de empate, a ordenação usa macro IoU de teste e depois `run_id`. O teste permanece como confirmação final; ele não é o critério principal porque isso contaminaria o holdout de teste com decisão de modelo.",
+        "",
+        f"Modelo selecionado: `{selected.get('run_id', 'pendente')}`.",
+        f"Arquitetura selecionada: {selected_name}.",
+        f"Feature set: `{selected.get('feature_set', 'pendente')}`.",
+        f"Função de perda: `{selected.get('loss', 'pendente')}`.",
+        f"Tile/stride: {selected.get('tile_size', 'pendente')} / {selected.get('stride', 'pendente')}.",
+        f"Seed: {selected.get('seed', 'pendente')}.",
+        f"Melhor época: {selected.get('best_epoch', 'pendente')}.",
+        f"Validação: macro IoU {fmt_optional_number(selected.get('val_macro_iou'))}, macro F1 {fmt_optional_number(selected.get('val_macro_f1'))}, acurácia global {fmt_optional_number(selected.get('val_overall_accuracy'))}.",
+        f"Teste final: macro IoU {fmt_optional_number(selected.get('test_macro_iou'))}, macro F1 {fmt_optional_number(selected.get('test_macro_f1'))}, acurácia global {fmt_optional_number(selected.get('test_overall_accuracy'))}.",
+        "",
+        "## Comparação dos candidatos",
+        "",
+        "Os cinco candidatos full-res foram treinados com resolução de 16 cm, tiles de 192 pixels e stride de 96 pixels. A tabela HTML abaixo apresenta as mesmas métricas em formato tabular; a lista aqui resume a justificativa de seleção.",
+        "",
+        *candidate_lines,
+        "",
+        "## Entradas e classes",
+        "",
+        f"- Polígonos de treinamento: `{params['polygons']}`.",
+        f"- Ortofoto RGB/RGBA: `{params['orthophoto']}`.",
+        f"- Campo textual: `{params['class_text_field']}`.",
+        f"- Campo numérico: `{params['class_value_field']}`.",
+        f"- Pixels ignorados no treinamento: `{params['ignore_index']}`.",
+        f"- Nodata no raster LULC final: `{params['output_nodata']}`.",
+        "",
+        "O treinamento usa classes internas 0 a 4, mas o raster final usa os códigos originais 1 a 5. O valor 255 é reservado para pixels ignorados durante o treinamento; o valor 0 é nodata de saída. Essa separação evita confundir ausência de dado com uma classe semântica real.",
+        "",
+        *class_lines,
+        "",
+        "Para a álgebra IBGE, a conversão é direta: área artificial recebe nota 10, área descoberta nota 5, corpo d'água nota 0 e exclusão da máscara válida, vegetação campestre nota 2 e vegetação florestal nota 1.",
+        "",
+        "## Leitura técnica do modelo selecionado",
+        "",
+        selected_narrative or "Descrição técnica pendente porque a configuração do modelo selecionado não foi encontrada nos artefatos locais.",
+        "",
+        "O modelo selecionado combina U-Net com encoder ResNet-34, feature set RGB e perda `weighted_ce_lovasz`. Essa configuração foi a melhor por validação nos artefatos disponíveis. A escolha por validação preserva a função do teste como holdout final.",
+        "",
+        "A U-Net reconstrói a máscara de segmentação por um decoder que recebe conexões de salto do encoder. Essas conexões preservam detalhes espaciais de bordas e objetos pequenos, relevantes em ortofoto de 16 cm. O ResNet-34 adiciona mais profundidade que o ResNet-18, aumentando capacidade para distinguir padrões visualmente próximos, como área artificial, solo descoberto e vegetação baixa.",
+        "",
+        "A perda `weighted_ce_lovasz` combina cross-entropy ponderada por classe com Lovasz. A cross-entropy mantém estabilidade por pixel e compensa classes raras; Lovasz adiciona pressão direta sobre IoU. Essa combinação é coerente com o critério de seleção por macro IoU, pois o objetivo não é apenas acertar muitos pixels, mas equilibrar desempenho entre as cinco classes.",
+        "",
+        "## Treinamento e avaliação",
+        "",
+        f"- Otimizador: `{training['optimizer']}`.",
+        f"- Scheduler: `{training['scheduler']}`.",
+        f"- Learning rate: `{training['learning_rate']}`.",
+        f"- Weight decay: `{training['weight_decay']}`.",
+        f"- Batch size: `{training['batch_size']}`.",
+        f"- Épocas configuradas: `{training['epochs']}`.",
+        f"- Early stopping patience: `{training['early_stopping_patience']}`.",
+        f"- Augmentation: flips {augmentation['flip_probability']}, rotate90 `{augmentation['rotate90']}`, brilho {augmentation['brightness']}, contraste {augmentation['contrast']}.",
+        "",
+        "A divisão treino/validação/teste usa blocos espaciais estratificados por classe. Essa estratégia reduz vazamento espacial e evita que classes pequenas desapareçam dos splits de validação e teste. A macro IoU é a métrica principal porque dá peso equivalente às cinco classes, mesmo quando a área de cada uma é muito diferente.",
+        "",
+        "## Inferência e uso no IBGE Lite",
+        "",
+        f"- Janela de inferência: `{inference['window_size']}` pixels.",
+        f"- Sobreposição: `{inference['overlap']}` pixels.",
+        f"- Batch de inferência: `{inference['batch_size']}`.",
+        "",
+        "O raster LULC individual selecionado é reamostrado para o grid do DTM por vizinho mais próximo, preservando classes categóricas. Em seguida, cada classe é convertida para a nota USOVEG e entra na álgebra IBGE com peso 0,10. Todos os demais temas permanecem iguais ao produto principal: DTM final, declividade derivada do drone, geologia, pedologia, geomorfologia e pluviosidade.",
+        "",
+        "## O que não existe nesta versão lite",
+        "",
+        "Esta versão não calcula agreement, confidence, margin ou entropy de ensemble. Esses diagnósticos dependem de múltiplos modelos e não fazem sentido para um único votante. A incerteza aqui deve ser inferida por inspeção visual, pelas métricas do holdout e pela comparação com o produto principal com ensemble.",
+        "",
+        "## Observação sobre artefatos",
+        "",
+        report["metrics_note"],
+        "",
+    ]
+    return "\n".join(lines)
+
+
 def complete_lulc_method_markdown(report: Mapping[str, Any]) -> str:
+    if report.get("report_mode") == "best_single":
+        return complete_lulc_single_method_markdown(report)
+
     params = report["params"]
     training = params["training"]
     augmentation = params["augmentation"]
@@ -1416,7 +1832,159 @@ def lulc_artifact_table(report: Mapping[str, Any]) -> str:
     return mapping_table(rows, ["Artefato", "Caminho local", "Tamanho", "Política web"])
 
 
+def single_lulc_artifact_table(report: Mapping[str, Any]) -> str:
+    paths: Dict[str, Any] = {
+        "sweep_results.json": report["sweep_results_path"],
+        "single_model_selection.json": report["single_selection_path"],
+    }
+    selection = report.get("single_selection", {}) if isinstance(report.get("single_selection", {}), Mapping) else {}
+    if selection.get("selected_lulc_path"):
+        paths["selected_lulc"] = selection["selected_lulc_path"]
+    selected = report.get("selected_single", {}) if isinstance(report.get("selected_single", {}), Mapping) else {}
+    if selected.get("output_dir"):
+        paths["selected_run_dir"] = selected["output_dir"]
+    rows = []
+    for label, raw_path in paths.items():
+        path = Path(str(raw_path))
+        if path.is_dir():
+            size = "diretório"
+        else:
+            size = f"{path.stat().st_size / (1024 * 1024):.2f} MB" if path.exists() else "pendente"
+        rows.append([label, str(raw_path), size, "não copiado para o website"])
+    return mapping_table(rows, ["Artefato", "Caminho local", "Tamanho", "Política web"])
+
+
+def single_lulc_method_section(report: Mapping[str, Any], lulc_thumbnail: str) -> str:
+    selected = report.get("selected_single", {}) if isinstance(report.get("selected_single", {}), Mapping) else {}
+    cards = metric_cards(
+        [
+            ["Modelo selecionado", selected.get("display_name", architecture_label(selected)) if selected else "pendente"],
+            ["Run selecionado", selected.get("run_id", "pendente")],
+            ["Val macro IoU", fmt_optional_number(selected.get("val_macro_iou"))],
+            ["Test macro IoU", fmt_optional_number(selected.get("test_macro_iou"))],
+            ["Melhor época", selected.get("best_epoch", "pendente")],
+            ["Features", selected.get("feature_set", "pendente")],
+            ["Loss", selected.get("loss", "pendente")],
+            ["Ensemble", "não usado"],
+        ]
+    )
+    class_rows = [
+        [row["class_id"], row["name"], fmt_optional_number(row["ibge_land_use_note"], 1)]
+        for row in report["class_definitions"]
+    ]
+    return (
+        "<article class=\"method-description\">"
+        f"{markdown_to_html(report['markdown'])}"
+        "<h3>Resumo numérico do LULC Lite</h3>"
+        f"{cards}"
+        f"<div class=\"figure inline\"><img src=\"{escape(lulc_thumbnail)}\" alt=\"LULC Lite usado no método IBGE\"></div>"
+        "<h3>Classes finais e notas USOVEG</h3>"
+        f"{mapping_table(class_rows, ['Código final', 'Classe LULC', 'Nota IBGE USOVEG'])}"
+        "<h3>Comparação dos cinco candidatos full-res</h3>"
+        f"{lulc_metric_table(report.get('candidate_runs', []))}"
+        "<h3>Artefatos locais</h3>"
+        "<p>Esta aba registra os caminhos dos artefatos completos, mas não copia modelos, GeoTIFFs ou probabilidades para o website lite.</p>"
+        f"{single_lulc_artifact_table(report)}"
+        "<p><a href=\"descricao_completa_metodo_lulc.md\">Abrir esta descrição em Markdown</a></p>"
+        "<p><a href=\"assets/lulc_method_report.json\">Abrir metadados LULC Lite em JSON</a></p>"
+        "</article>"
+    )
+
+
+def lite_full_comparison_section(comparison: Mapping[str, Any]) -> str:
+    stats = comparison["score_difference_stats"]
+    accounting = comparison["valid_pixel_accounting"]
+    transition = comparison["class5_transition_summary"]
+    assets = comparison["assets"]
+    cards = metric_cards(
+        [
+            ["Pixels comuns", fmt_int(accounting["common_valid_pixels"])],
+            ["Área comum", f"{fmt_area(accounting['common_valid_area_m2'])} m²"],
+            ["Diferença média", fmt_number(stats["mean"])],
+            ["Mediana", fmt_number(stats["median"])],
+            ["MAE", fmt_number(stats["mae"])],
+            ["RMSE", fmt_number(stats["rmse"])],
+            ["Lite maior", fmt_percent(stats["positive_fraction"])],
+            ["Lite menor", fmt_percent(stats["negative_fraction"])],
+            ["Classe mudou", fmt_percent(transition["changed_fraction"])],
+            ["Classe aumentou", fmt_percent(transition["upward_fraction"])],
+            ["Classe reduziu", fmt_percent(transition["downward_fraction"])],
+            ["Classe igual", fmt_percent(transition["unchanged_fraction"])],
+        ]
+    )
+    stats_rows = [
+        ["Mínimo", fmt_number(stats["min"])],
+        ["P01", fmt_number(stats["p01"])],
+        ["P05", fmt_number(stats["p05"])],
+        ["P10", fmt_number(stats["p10"])],
+        ["P25", fmt_number(stats["p25"])],
+        ["Mediana / P50", fmt_number(stats["median"])],
+        ["P75", fmt_number(stats["p75"])],
+        ["P90", fmt_number(stats["p90"])],
+        ["P95", fmt_number(stats["p95"])],
+        ["P99", fmt_number(stats["p99"])],
+        ["Máximo", fmt_number(stats["max"])],
+        ["Desvio padrão", fmt_number(stats["std"])],
+        ["Diferença absoluta mediana", fmt_number(stats["median_absolute_difference"])],
+    ]
+    threshold_rows = [
+        [f"<= {threshold}", fmt_percent(fraction)]
+        for threshold, fraction in stats["within_abs_threshold_fraction"].items()
+    ]
+    accounting_rows = [
+        ["Válidos no completo", fmt_int(accounting["full_valid_pixels"])],
+        ["Válidos no lite", fmt_int(accounting["lite_valid_pixels"])],
+        ["Válidos em ambos", fmt_int(accounting["common_valid_pixels"])],
+        ["Válidos só no completo", fmt_int(accounting["full_only_valid_pixels"])],
+        ["Válidos só no lite", fmt_int(accounting["lite_only_valid_pixels"])],
+    ]
+    artifact_links = "".join(
+        [
+            artifact_link(assets["stats_json"], "Estatísticas JSON"),
+            artifact_link(assets["histogram_csv"], "Histograma CSV"),
+            artifact_link(assets["transition_csv"], "Matriz de transição 5 classes CSV"),
+        ]
+    )
+    return (
+        "<div class=\"sensitivity-page\">"
+        "<section class=\"sensitivity-block\">"
+        "<h2>Comparação com o completo</h2>"
+        "<p>Esta aba compara o produto IBGE lite, baseado no melhor modelo LULC individual, com o produto completo, baseado no ensemble LULC. A diferença numérica é sempre <code>lite - completo</code>. Valores positivos indicam que a versão lite aumentou o score de suscetibilidade; valores negativos indicam redução.</p>"
+        f"{mapping_table([['Produto completo', comparison['complete_score']], ['Produto lite', comparison['lite_score']]], ['Produto', 'Raster de score 1-10'])}"
+        "</section>"
+        "<section class=\"sensitivity-block\">"
+        "<h2>Resumo numérico</h2>"
+        f"{cards}"
+        "</section>"
+        "<section class=\"sensitivity-block\">"
+        "<h2>Estatísticas descritivas da diferença</h2>"
+        f"{mapping_table(stats_rows, ['Métrica', 'lite - completo'])}"
+        "<h3>Frações por limiar absoluto</h3>"
+        f"{mapping_table(threshold_rows, ['|Diferença|', 'Fração dos pixels comuns'])}"
+        "</section>"
+        "<section class=\"sensitivity-block\">"
+        "<h2>Máscara válida e classes finais</h2>"
+        f"{mapping_table(accounting_rows, ['Conta', 'Pixels'])}"
+        f"{mapping_table([['Classes iguais', fmt_int(transition['unchanged_pixels']), fmt_percent(transition['unchanged_fraction'])], ['Classes aumentaram no lite', fmt_int(transition['upward_pixels']), fmt_percent(transition['upward_fraction'])], ['Classes reduziram no lite', fmt_int(transition['downward_pixels']), fmt_percent(transition['downward_fraction'])], ['Classes mudaram', fmt_int(transition['changed_pixels']), fmt_percent(transition['changed_fraction'])]], ['Transição 5 classes', 'Pixels', 'Fração'])}"
+        "</section>"
+        "<section class=\"sensitivity-block\">"
+        "<h2>Histograma</h2>"
+        "<div class=\"histogram-panel\">"
+        f"<img src=\"{escape(assets['histogram_png'])}\" alt=\"Histograma da diferença entre produto lite e completo\">"
+        "<div>"
+        "<p>O histograma mostra a distribuição de <code>score lite - score completo</code> nos pixels válidos comuns. A linha preta marca diferença zero; as linhas coloridas marcam média e mediana.</p>"
+        f"<ul class=\"artifact-list\">{artifact_links}</ul>"
+        "</div>"
+        "</div>"
+        "</section>"
+        "</div>"
+    )
+
+
 def lulc_method_section(report: Mapping[str, Any], lulc_thumbnail: str) -> str:
+    if report.get("report_mode") == "best_single":
+        return single_lulc_method_section(report, lulc_thumbnail)
+
     class_names = {row["class_id"]: row["name"] for row in report["class_definitions"]}
     ensemble = report.get("ensemble", {}) if isinstance(report.get("ensemble", {}), Mapping) else {}
     agreement = ensemble.get("agreement_summary", {}) if isinstance(ensemble, Mapping) else {}
@@ -1488,9 +2056,21 @@ def build_html(
     thumbs: Mapping[str, str],
     viewer: Mapping[str, Any],
     stats: Mapping[str, Any],
-    sensitivity: Mapping[str, Any],
+    sensitivity: Optional[Mapping[str, Any]],
     lulc_report: Mapping[str, Any],
+    lite_full_comparison: Optional[Mapping[str, Any]],
 ) -> str:
+    is_lite = WEBSITE_VARIANT == "lite"
+    product_title = "Produto IBGE adaptado lite em 16 cm" if is_lite else "Produto IBGE adaptado em 16 cm"
+    product_intro = (
+        "Este relatório documenta a versão lite do produto IBGE adaptado de alta resolução. "
+        "A álgebra e os proxies são os mesmos do produto principal, mas USOVEG usa apenas o "
+        "melhor modelo LULC individual full-res, sem ensemble."
+        if is_lite
+        else "Este relatório documenta a geração do produto IBGE adaptado de alta resolução. "
+        "A grade estatística nacional de 1 km foi substituída pelo grid do DTM final em 16 cm; "
+        "os pesos, a escala de notas e as classes finais da metodologia IBGE foram preservados."
+    )
     method_description_md = complete_method_markdown(config, summary, stats)
     method_description_html = markdown_to_html(method_description_md)
     lulc_mapping = custom_lulc_land_use_mapping()
@@ -1521,10 +2101,16 @@ def build_html(
         ("algebra", "Álgebra IBGE"),
         ("results", "Resultados"),
         ("method_description", "Descrição completa do método"),
-        ("lulc_method_description", "Descrição completa do método LULC"),
-        ("dtm_sensitivity", "Comparação com DTM tendencioso"),
-        ("webviewer", "webviewer"),
+        (
+            "lulc_method_description",
+            "Descrição completa do método LULC Lite" if is_lite else "Descrição completa do método LULC",
+        ),
     ]
+    if sensitivity is not None:
+        tabs.append(("dtm_sensitivity", "Comparação com DTM tendencioso"))
+    if lite_full_comparison is not None:
+        tabs.append(("lite_full_comparison", "Comparação com o completo"))
+    tabs.append(("webviewer", "webviewer"))
     nav = "".join(
         f"<button class=\"tab-button{' active' if idx == 0 else ''}\" data-tab=\"{tab_id}\">{label}</button>"
         for idx, (tab_id, label) in enumerate(tabs)
@@ -1532,12 +2118,10 @@ def build_html(
 
     tab_content = {
         "overview": section(
-            "Produto IBGE adaptado em 16 cm",
+            product_title,
             thumbs["overview"],
             (
-                "<p>Este relatório documenta a geração do produto IBGE adaptado de alta resolução. "
-                "A grade estatística nacional de 1 km foi substituída pelo grid do DTM final em 16 cm; "
-                "os pesos, a escala de notas e as classes finais da metodologia IBGE foram preservados.</p>"
+                f"<p>{escape(product_intro)}</p>"
                 f"<p><strong>Fração válida:</strong> {summary['valid_fraction']:.6f}. "
                 f"<strong>Score 1-10:</strong> {summary['score_1_to_10_min']:.4f} a {summary['score_1_to_10_max']:.4f}.</p>"
             ),
@@ -1558,7 +2142,12 @@ def build_html(
         "lulc": section(
             "LULC / USOVEG",
             thumbs["lulc"],
-            "<p>Fonte: ensemble LULC full-res gerado por deep learning. A classe de água recebe nota 0 e é excluída dos pixels válidos.</p>",
+            (
+                "<p>Fonte: melhor modelo LULC individual full-res gerado por deep learning. "
+                "A classe de água recebe nota 0 e é excluída dos pixels válidos. O ensemble não é usado nesta versão lite.</p>"
+                if is_lite
+                else "<p>Fonte: ensemble LULC full-res gerado por deep learning. A classe de água recebe nota 0 e é excluída dos pixels válidos.</p>"
+            ),
             mapping_table(lulc_rows, ["Código LULC", "Classe", "Nota IBGE"]),
             stats_table(stats["lulc"], labels=LULC_NAMES),
         ),
@@ -1660,7 +2249,6 @@ def build_html(
             "</article>"
         ),
         "lulc_method_description": lulc_method_section(lulc_report, thumbs["lulc"]),
-        "dtm_sensitivity": dtm_sensitivity_section(sensitivity),
         "webviewer": (
             "<div class=\"viewer-shell\">"
             "<aside class=\"viewer-panel\">"
@@ -1683,6 +2271,10 @@ def build_html(
             "</div>"
         ),
     }
+    if sensitivity is not None:
+        tab_content["dtm_sensitivity"] = dtm_sensitivity_section(sensitivity)
+    if lite_full_comparison is not None:
+        tab_content["lite_full_comparison"] = lite_full_comparison_section(lite_full_comparison)
     sections = "".join(
         f"<section id=\"{tab_id}\" class=\"tab-panel{' active' if idx == 0 else ''}\">{tab_content[tab_id]}</section>"
         for idx, (tab_id, _) in enumerate(tabs)
@@ -1694,7 +2286,7 @@ def build_html(
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>Produto IBGE Adaptado 16 cm</title>
+  <title>{escape(product_title)}</title>
   <link href="https://unpkg.com/maplibre-gl@4.7.1/dist/maplibre-gl.css" rel="stylesheet">
   <style>
     :root {{ --ink:#18212b; --muted:#5b6673; --line:#d8dee6; --bg:#f6f8fb; --panel:#ffffff; --accent:#1f6f8b; }}
@@ -1722,7 +2314,7 @@ def build_html(
     table {{ width:100%; border-collapse:collapse; margin:14px 0 18px; font-size:14px; }}
     th, td {{ text-align:left; border-bottom:1px solid var(--line); padding:8px 10px; vertical-align:top; }}
     th {{ background:#f0f4f8; color:#22313d; }}
-    #webviewer, #method_description, #lulc_method_description, #dtm_sensitivity {{ grid-column:1 / -1; background:transparent; border:0; padding:0; }}
+    #webviewer, #method_description, #lulc_method_description, #dtm_sensitivity, #lite_full_comparison {{ grid-column:1 / -1; background:transparent; border:0; padding:0; }}
     .method-description {{ background:var(--panel); border:1px solid var(--line); border-radius:8px; padding:24px; max-width:1060px; }}
     .method-description h2 {{ margin-top:0; }}
     .method-description h3 {{ margin-top:24px; }}
@@ -1769,8 +2361,8 @@ def build_html(
 </head>
 <body>
   <header>
-    <h1>Produto IBGE adaptado em grade de 16 cm</h1>
-    <p>Relatório técnico em português da geração do produto final: entradas, proxies, mapeamentos, álgebra e visualização interativa do score de suscetibilidade.</p>
+    <h1>{escape(product_title)}</h1>
+    <p>{escape('Relatório técnico em português da geração do produto lite: melhor modelo LULC individual, proxies, mapeamentos, álgebra e visualização interativa do score de suscetibilidade.' if is_lite else 'Relatório técnico em português da geração do produto final: entradas, proxies, mapeamentos, álgebra e visualização interativa do score de suscetibilidade.')}</p>
   </header>
   <nav>{nav}</nav>
   <main>{sections}</main>
@@ -1865,7 +2457,8 @@ def main() -> int:
     summary = read_json(REPORTS / "summary.json")
     thumbnails = make_thumbnails()
     viewer = make_webviewer_asset()
-    sensitivity = make_dtm_sensitivity_assets()
+    sensitivity = None if WEBSITE_VARIANT == "lite" else make_dtm_sensitivity_assets()
+    lite_full_comparison = make_lite_full_comparison_assets() if WEBSITE_VARIANT == "lite" else None
     lulc_report = load_lulc_method_report()
     active_dtm = FINAL_DTM
     stats = {
@@ -1885,6 +2478,8 @@ def main() -> int:
         "thumbnails": thumbnails,
         "webviewer": viewer,
         "dtm_sensitivity": sensitivity,
+        "lite_full_comparison": lite_full_comparison,
+        "website_variant": WEBSITE_VARIANT,
         "lulc_method": lulc_report,
         "stats": stats,
     }
@@ -1902,7 +2497,7 @@ def main() -> int:
         encoding="utf-8",
     )
     (WEBSITE / "index.html").write_text(
-        build_html(config, summary, thumbnails, viewer, stats, sensitivity, lulc_report),
+        build_html(config, summary, thumbnails, viewer, stats, sensitivity, lulc_report, lite_full_comparison),
         encoding="utf-8",
     )
     print(f"[ibge-website] Wrote {WEBSITE / 'index.html'}")

@@ -1,0 +1,53 @@
+{
+  "selection_type": "best_single_model",
+  "selection_metric": "val_macro_iou",
+  "tie_breakers": [
+    "test_macro_iou",
+    "run_id"
+  ],
+  "selected_run_id": "fullres_unet_resnet34_weighted_ce_lovasz_rgb_seed42",
+  "selected_run": {
+    "architecture": "unet",
+    "best_epoch": 100,
+    "best_score": 0.9991879038711279,
+    "encoder": "resnet34",
+    "epochs": 100,
+    "experiment": "fullres_unet_resnet34_weighted_ce_lovasz_rgb",
+    "experiment_config": {
+      "feature_set": "rgb",
+      "inference_overlap": 64,
+      "inference_window_size": 256,
+      "loss": {
+        "name": "weighted_ce_lovasz"
+      },
+      "model": {
+        "architecture": "unet",
+        "encoder": "resnet34"
+      },
+      "resolution": 0.16,
+      "seeds": [
+        42
+      ],
+      "stride": 96,
+      "tile_size": 192
+    },
+    "feature_set": "rgb",
+    "loss": "weighted_ce_lovasz",
+    "output_dir": "/home/kaue/landslide_susc_modelling/IBGE_method/own_LULC/outputs_fullres/experiments/fullres_unet_resnet34_weighted_ce_lovasz_rgb_seed42",
+    "resolution": 0.16,
+    "run_id": "fullres_unet_resnet34_weighted_ce_lovasz_rgb_seed42",
+    "seed": 42,
+    "stride": 96,
+    "test_macro_f1": 0.9977827611178558,
+    "test_macro_iou": 0.9955777447748158,
+    "test_overall_accuracy": 0.9973652979246053,
+    "tile_size": 192,
+    "val_macro_f1": 0.9995937209259805,
+    "val_macro_iou": 0.9991879038711279,
+    "val_overall_accuracy": 0.9997012693985603
+  },
+  "selected_lulc_path": "/home/kaue/landslide_susc_modelling/IBGE_method/own_LULC/outputs_fullres/experiments/fullres_unet_resnet34_weighted_ce_lovasz_rgb_seed42/lulc_custom_16cm.tif",
+  "dtm_path": "/home/kaue/data/landslide/dtm_final.tif",
+  "ensemble_used": false,
+  "note": "IBGE lite uses the best individual full-resolution LULC model, not the ensemble."
+}
