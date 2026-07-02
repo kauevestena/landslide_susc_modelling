@@ -25,7 +25,10 @@ from rasterio.warp import transform
 
 from IBGE_method.own_LULC import lulc_inputs
 from src.three_method_comparison import (
+    GEOLOGY_IBGE_NOTES,
     IBGE_WEIGHTS,
+    PEDOLOGY_IBGE_NOTES,
+    RELIEF_IBGE_NOTES,
     ROOT,
     SIG_PATHS,
     custom_lulc_land_use_mapping,
@@ -1485,6 +1488,274 @@ def complete_method_markdown(config: Mapping[str, Any], summary: Mapping[str, An
     return "\n".join(lines)
 
 
+def vector_unique_values(path: Path, field: str) -> Dict[str, Any]:
+    try:
+        import geopandas as gpd
+
+        gdf = gpd.read_file(path)
+    except Exception as exc:
+        return {"values": [], "error": str(exc)}
+    if field not in gdf.columns:
+        return {"values": [], "error": f"campo {field!r} ausente"}
+    values = sorted({str(value).strip() for value in gdf[field].dropna().tolist()})
+    return {"values": values, "error": None}
+
+
+def vector_attribute_summary(
+    path: Path,
+    field: str,
+    values: Sequence[str],
+    columns: Sequence[str],
+) -> Dict[str, Dict[str, Sequence[str]]]:
+    try:
+        import geopandas as gpd
+
+        gdf = gpd.read_file(path)
+    except Exception:
+        return {}
+    if field not in gdf.columns:
+        return {}
+    present_columns = [column for column in columns if column in gdf.columns]
+    if not present_columns:
+        return {}
+    result: Dict[str, Dict[str, Sequence[str]]] = {}
+    field_values = gdf[field].astype(str).str.strip()
+    for value in values:
+        subset = gdf[field_values == str(value)]
+        if subset.empty:
+            continue
+        payload: Dict[str, Sequence[str]] = {}
+        for column in present_columns:
+            unique = sorted({str(item).strip() for item in subset[column].dropna().tolist() if str(item).strip()})
+            if unique:
+                payload[column] = unique[:6]
+        result[str(value)] = payload
+    return result
+
+
+def markdown_value_list(values: Sequence[Any]) -> str:
+    if not values:
+        return "nenhum valor registrado"
+    return ", ".join(f"`{value}`" for value in values)
+
+
+def markdown_mapping_lines(mapping: Mapping[Any, Any]) -> Sequence[str]:
+    return [
+        f"- `{key}` -> {fmt_optional_number(value, 2)}."
+        for key, value in sorted(mapping.items(), key=lambda item: str(item[0]))
+    ]
+
+
+def markdown_attribute_lines(title: str, attributes: Mapping[str, Mapping[str, Sequence[str]]]) -> Sequence[str]:
+    lines = [f"## {title}", ""]
+    if not attributes:
+        return [
+            *lines,
+            "Os atributos detalhados não puderam ser inspecionados nesta geração do website. O mapeamento implementado continua registrado nas tabelas de notas e no provenance.",
+            "",
+        ]
+    for value, payload in attributes.items():
+        lines.extend([f"- Classe `{value}`:"])
+        for column, items in payload.items():
+            lines.append(f"- {column}: {markdown_value_list(items)}.")
+        lines.append("")
+    return lines
+
+
+def complete_proxy_mappings_markdown(config: Mapping[str, Any], stats: Mapping[str, Any]) -> str:
+    proxies = config["input_proxies"]
+    geo = proxies["GEO"]
+    gem = proxies["GEM"]
+    ped = proxies["PED"]
+
+    geo_all = vector_unique_values(SIG_PATHS["geology"], "SIGLA_UNID")
+    gem_all = vector_unique_values(SIG_PATHS["relief"], "Classe")
+    ped_all = vector_unique_values(SIG_PATHS["pedology"], "DESC_")
+
+    geo_attrs = vector_attribute_summary(
+        SIG_PATHS["geology"],
+        "SIGLA_UNID",
+        geo.get("values", []),
+        [
+            "NOME_UNIDA",
+            "HIERARQUIA",
+            "LITOTIPO1",
+            "LITOTIPO2",
+            "CLASSE_ROC",
+            "DEF_TEC",
+            "CIS_FRAT",
+            "TIPO_DEF",
+            "COMP_REOL",
+            "RELEVO",
+            "DECLIVIDAD",
+            "AMPL_TOPO",
+        ],
+    )
+    ped_attrs = vector_attribute_summary(
+        SIG_PATHS["pedology"],
+        "DESC_",
+        ped.get("values", []),
+        ["APTPCT", "P", "R", "M", "I", "SBCS", "EDAFICA", "Fonte", "Escala"],
+    )
+
+    geo_stats = stats["geology"]
+    gem_stats = stats["geomorphology"]
+    ped_stats = stats["pedology"]
+
+    lines = [
+        "# Mapeamentos proxy de Geologia, Geomorfologia e Pedologia",
+        "",
+        "Este documento audita os mapeamentos proxy usados nos temas GEO, GEM e PED do produto IBGE adaptado em 16 cm. O objetivo é explicar o que foi efetivamente implementado, quais critérios metodológicos vieram da revisão do método IBGE, quais inferências foram feitas para adaptar os arquivos locais CPRM/SGB/SIG, e quais limitações permanecem.",
+        "",
+        "A leitura mais importante é esta: os três temas preservam a lógica direcional da metodologia IBGE, mas não afirmam reproduzir integralmente a base nacional BDIA do IBGE. A adaptação usa os dados locais disponíveis, rasteriza as notas diretamente no grid do DTM final de 16 cm, e registra os valores de entrada no provenance. Quando uma classe não mapeada aparece dentro do recorte do DTM, o pipeline falha em vez de preencher silenciosamente.",
+        "",
+        "## Escopo e transparência",
+        "",
+        "- Este texto documenta a versão adaptada de alta resolução, não o produto nacional estrito em grade estatística de 1 km.",
+        "- O grid de referência é o DTM final do drone em 16 cm.",
+        "- Geologia, Geomorfologia e Pedologia entram como proxies locais compatíveis, porque os arquivos disponíveis não expõem exatamente todas as tabelas e campos intermediários da metodologia BDIA nacional.",
+        "- As notas são tratadas como graus de potencialidade 1-10. Valores maiores indicam maior contribuição temática à suscetibilidade.",
+        "- A documentação separa fato implementado, justificativa técnica e limitação. Isso evita transformar uma decisão proxy em uma afirmação de equivalência perfeita com o IBGE estrito.",
+        "",
+        "## Como o IBGE estrito faria",
+        "",
+        "No método nacional revisado em `IBGE_method/IBGE_method_full_review.md`, os três temas não são simples nomes de classes. Eles são interpretações temáticas padronizadas em graus de potencialidade.",
+        "",
+        "- **GEO / Geologia:** o IBGE calcula a nota geológica a partir da média de quatro componentes: litologia, característica genética da litologia, província estrutural e subprovíncia estrutural. A mesma rocha pode ter comportamento distinto dependendo da gênese, estrutura e deformação tectônica.",
+        "- **GEM / Geomorfologia:** o IBGE usa modelados geomorfológicos, especialmente a quarta ordem taxonômica da BDIA. Modelados de acumulação tendem a notas menores; modelados de dissecação, com maior densidade de drenagem e aprofundamento das incisões, tendem a notas maiores.",
+        "- **PED / Pedologia:** o IBGE usa o solo dominante da unidade de mapeamento e calcula `PED = max(PROF, TEXT, RELTEXT)`. O máximo representa a característica pedológica mais restritiva entre profundidade, textura e relação ou gradiente textural.",
+        "",
+        "## Como a adaptação local fez",
+        "",
+        "- A base nacional estrita não foi reproduzida campo a campo. Em vez disso, foram usados shapefiles locais CPRM/SGB/SIG com campos operacionais compatíveis.",
+        "- As camadas categóricas foram rasterizadas diretamente no grid do DTM de 16 cm e alinhadas por vizinho mais próximo.",
+        "- O código recorta cada shapefile pelo bbox do DTM antes de validar os valores. Portanto, classes presentes no shapefile municipal, mas fora do recorte final, não entram no produto final nem na tabela `mapped_values` dos relatórios.",
+        "- Se algum valor aparece dentro do bbox do DTM e não existe no dicionário de notas, a geração falha com erro explícito. Não há fallback silencioso para zero, média ou classe vizinha.",
+        "- O dicionário versionado contém mais classes do que as que aparecem no recorte final. Isso é intencional: permite reutilização em áreas adjacentes sem mudar o código, mas o relatório do produto mostra apenas as classes efetivamente usadas no grid final.",
+        "",
+        "## Valores existentes nos shapefiles e valores efetivamente usados",
+        "",
+        f"- Geologia: shapefile `{SIG_PATHS['geology']}`, campo `SIGLA_UNID`. Valores existentes no shapefile: {markdown_value_list(geo_all['values'])}. Valores que interceptaram o grid final: {markdown_value_list(geo.get('values', []))}.",
+        f"- Geomorfologia: shapefile `{SIG_PATHS['relief']}`, campo `Classe`. Valores existentes no shapefile: {markdown_value_list(gem_all['values'])}. Valores que interceptaram o grid final: {markdown_value_list(gem.get('values', []))}.",
+        f"- Pedologia: shapefile `{SIG_PATHS['pedology']}`, campo `DESC_`. Valores existentes no shapefile: {markdown_value_list(ped_all['values'])}. Valores que interceptaram o grid final: {markdown_value_list(ped.get('values', []))}.",
+        "",
+        "## Tabela implementada: Geologia / GEO",
+        "",
+        "Dicionário versionado completo em `src/three_method_comparison.py`:",
+        "",
+        *markdown_mapping_lines(GEOLOGY_IBGE_NOTES),
+        "",
+        "Valores efetivamente usados nesta execução:",
+        "",
+        *markdown_mapping_lines(geo.get("mapped_values", {})),
+        "",
+        f"A camada GEO gerada teve {fmt_int(geo_stats['pixels'])} pixels avaliados, variou de {fmt_number(geo_stats['min'])} a {fmt_number(geo_stats['max'])}, média {fmt_number(geo_stats['mean'])} e desvio padrão {fmt_number(geo_stats['std'])}. No recorte final, a nota ficou espacialmente constante porque apenas `PRps` interceptou o grid válido.",
+        "",
+        "### Critério usado para `PRps -> 7,3`",
+        "",
+        "`SIGLA_UNID` foi usado porque é o identificador sintético da unidade geológica. Ele preserva a unidade de mapeamento como objeto interpretável, enquanto campos como litotipo, deformação, fraturamento, coerência, relevo e declividade descrevem propriedades internas dessa unidade. A nota `7,3` representa uma condição alta/intermediária-alta, não extrema.",
+        "",
+        "A decisão é coerente com os atributos locais observados para `PRps`: a unidade Paraíba do Sul aparece como complexo metamórfico, com gnaisse milonítico, granada gnaisse, metamarga e litotipos associados; apresenta deformação dúctil/rúptil, fraturamento moderado a intenso, comportamento anisotrópico, baixa a alta alteração/intemperismo e associação frequente a domínio montanhoso ou morros/serras. Esses elementos são compatíveis com maior fragilidade estrutural e maior possibilidade de planos de fraqueza quando comparados a unidades maciças pouco deformadas.",
+        "",
+        "Ao mesmo tempo, a nota não foi levada para 9 ou 10 porque GEO, no método IBGE, não deve duplicar integralmente o efeito da declividade e da geomorfologia. O relevo íngreme e a inclinação entram de forma própria em GEM e DECL. A nota geológica deve representar predisposição litológico-estrutural, não o score final de encosta.",
+        "",
+        *markdown_attribute_lines("Atributos CPRM/SGB observados para as classes geológicas usadas", geo_attrs),
+        "## Limitações específicas da Geologia",
+        "",
+        "- O recorte final usa apenas `PRps`. Isso reduz a capacidade da geologia de diferenciar subáreas dentro do produto.",
+        "- A adaptação não recalcula explicitamente `GEO = média(LIT, GEN, PROV, SUBPROV)` porque a tabela BDIA completa com esses componentes normalizados não está disponível neste fluxo local.",
+        "- O mapeamento é rastreável e coerente com atributos CPRM/SGB, mas deveria ser revisado por geólogo se o produto for usado como laudo formal.",
+        "",
+        "## Tabela implementada: Geomorfologia / GEM",
+        "",
+        "Dicionário versionado completo em `src/three_method_comparison.py`:",
+        "",
+        *markdown_mapping_lines(RELIEF_IBGE_NOTES),
+        "",
+        "Valores efetivamente usados nesta execução:",
+        "",
+        *markdown_mapping_lines(gem.get("mapped_values", {})),
+        "",
+        f"A camada GEM gerada teve {fmt_int(gem_stats['pixels'])} pixels avaliados, variou de {fmt_number(gem_stats['min'])} a {fmt_number(gem_stats['max'])}, média {fmt_number(gem_stats['mean'])} e desvio padrão {fmt_number(gem_stats['std'])}. Diferentemente de GEO e PED, GEM apresentou variação espacial relevante dentro do recorte.",
+        "",
+        "### Critério geomorfológico das notas",
+        "",
+        "`Classe` foi usado porque o shapefile de padrões de relevo já entrega uma classificação morfológica direta: planícies, colinas, morros baixos, morros altos, morrotes e serras. Essa legenda não é a tabela BDIA de modelados, mas é o proxy local mais próximo para expressar energia do relevo, dissecação e posição morfológica.",
+        "",
+        "- `Planícies e terraços fluviais -> 1`: representa ambiente baixo, deposicional ou de acumulação, com baixa energia de relevo. Na lógica IBGE, modelados de acumulação tendem a notas menores.",
+        "- `Colinas -> 3`: representa relevo ondulado ou dissecado de menor energia. A nota baixa a moderada reconhece que há forma de relevo, mas sem atribuir o mesmo potencial de morros ou serras.",
+        "- `Morros baixos -> 7`: representa relevo mais dissecado, com maior amplitude e maior energia que colinas. A nota alta reflete maior potencial geomorfológico para concentração de fluxos e instabilidade de encostas.",
+        "- `Morros altos -> 9`: representa relevo de alta energia, maior amplitude e formas mais favoráveis a encostas longas/íngremes. A nota muito alta é coerente com a direção IBGE para modelados de dissecação mais intensa.",
+        "",
+        "A progressão 1, 3, 7 e 9 foi escolhida para manter um gradiente monotônico claro: quanto maior a energia do relevo e a dissecação, maior a nota GEM. Essa camada é uma das mais importantes para a adaptação local porque traz variação espacial regional que complementa a declividade de 16 cm calculada diretamente do DTM.",
+        "",
+        "## Limitações específicas da Geomorfologia",
+        "",
+        "- A legenda `Classe` não contém explicitamente os códigos de modelados BDIA usados no IBGE estrito.",
+        "- A nota não é calculada por densidade de drenagem e aprofundamento de incisões numéricos; ela é uma equivalência ordinal entre padrões de relevo locais e o sentido físico da tabela IBGE.",
+        "- Apesar disso, GEM é o proxy mais estável entre os três temas aqui auditados, porque a classe de relevo tem correspondência direta com energia geomorfológica e apresenta variação dentro do recorte.",
+        "",
+        "## Tabela implementada: Pedologia / PED",
+        "",
+        "Dicionário versionado completo em `src/three_method_comparison.py`:",
+        "",
+        *markdown_mapping_lines(PEDOLOGY_IBGE_NOTES),
+        "",
+        "Valores efetivamente usados nesta execução:",
+        "",
+        *markdown_mapping_lines(ped.get("mapped_values", {})),
+        "",
+        f"A camada PED gerada teve {fmt_int(ped_stats['pixels'])} pixels avaliados, variou de {fmt_number(ped_stats['min'])} a {fmt_number(ped_stats['max'])}, média {fmt_number(ped_stats['mean'])} e desvio padrão {fmt_number(ped_stats['std'])}. No recorte válido, a classe pedológica dominante foi `PEe1`; `Rios` recebeu nota 0 e entrou como exclusão/sem avaliação pedológica.",
+        "",
+        "### Critério usado para `PEe1 -> 8`",
+        "",
+        "`DESC_` foi usado como legenda pedológica operacional porque o shapefile local não expõe, de forma equivalente ao fluxo BDIA completo, os campos já normalizados para profundidade, textura e relação textural. O campo preserva a unidade de solo mapeada e permite uma nota proxy auditável.",
+        "",
+        "`PEe1` foi tratado como classe restritiva e recebeu nota 8. A justificativa é coerente com a lógica pedológica do IBGE: Argissolos e classes com forte contraste textural ou gradiente entre horizontes tendem a aumentar restrições à infiltração/percolação e podem favorecer planos de descontinuidade hidrológica. Como o IBGE usa o máximo entre profundidade, textura e relação textural, uma característica restritiva basta para elevar a nota PED.",
+        "",
+        "`Rios -> 0` não representa solo estável. Representa ausência de avaliação pedológica para água/canal. No produto final, água e classes não avaliáveis são tratadas como exclusão da máscara válida quando apropriado, não como terreno de baixa suscetibilidade.",
+        "",
+        *markdown_attribute_lines("Atributos CPRM/SGB observados para as classes pedológicas usadas", ped_attrs),
+        "## Limitações específicas da Pedologia",
+        "",
+        "- O produto não recalcula `PED = max(PROF, TEXT, RELTEXT)` a partir dos três atributos originais do IBGE, porque esses campos não estão disponíveis no shapefile local no mesmo formato operacional.",
+        "- A presença dominante de `PEe1` torna a camada pouco variável dentro do recorte; isso é uma limitação temática do dado disponível, não do grid de 16 cm.",
+        "- A nota 8 é tecnicamente defensável como proxy restritivo, mas a calibração ideal exigiria tabela pedológica oficial completa ou revisão pericial por pedólogo.",
+        "",
+        "## Regra de validação aplicada pelo pipeline",
+        "",
+        "A validação operacional ocorre antes da rasterização em tiles. O código recorta cada shapefile pelo bbox do DTM, coleta os valores do campo de interesse e compara esses valores com o dicionário versionado. Se existir valor não mapeado dentro do bbox, a execução falha. Isso protege o produto contra uma classe nova entrar como zero, nodata ou média por acidente.",
+        "",
+        "Depois da validação, as geometrias são rasterizadas por tile, usando a transformada e resolução do DTM. Como GEO, GEM e PED são variáveis categóricas já convertidas para nota, não há interpolação bilinear nesses temas. O valor final de cada pixel é a nota do polígono que cobre aquele pixel.",
+        "",
+        "## Síntese de confiança",
+        "",
+        "- **Geomorfologia:** confiança relativa mais alta entre os três proxies, porque a legenda local tem relação direta com energia do relevo e apresenta variação espacial no recorte.",
+        "- **Geologia:** confiança moderada. A interpretação de `PRps` é coerente com atributos geológico-estruturais, mas a camada é constante no recorte final e não substitui a média BDIA formal dos quatro componentes geológicos.",
+        "- **Pedologia:** confiança moderada a cautelosa. A nota de `PEe1` segue a lógica restritiva do IBGE, mas os campos completos `PROF`, `TEXT` e `RELTEXT` não foram recalculados formalmente.",
+        "",
+        "## Recomendações futuras",
+        "",
+        "- Obter as tabelas BDIA oficiais completas para geologia e pedologia, com os campos necessários para reproduzir `GEO` e `PED` de forma estrita.",
+        "- Anexar uma tabela pericial revisada por geólogo e pedólogo, mantendo as notas usadas e a justificativa de cada classe.",
+        "- Expandir o relatório com mapas de cobertura dos polígonos originais e estatísticas por classe quando o recorte de estudo for ampliado.",
+        "- Manter a regra atual de falhar em classes não mapeadas, pois ela é essencial para rastreabilidade.",
+        "",
+    ]
+
+    for label, payload in (("Geologia", geo_all), ("Geomorfologia", gem_all), ("Pedologia", ped_all)):
+        if payload.get("error"):
+            lines.extend(
+                [
+                    f"## Aviso de inspeção: {label}",
+                    "",
+                    f"Os valores completos do shapefile não puderam ser inspecionados automaticamente: `{payload['error']}`. Os valores usados no produto continuam disponíveis no `method_config.json` e no `provenance.json`.",
+                    "",
+                ]
+            )
+    return "\n".join(lines)
+
+
 def inline_markdown(text: str) -> str:
     escaped = escape(text)
     parts = escaped.split("`")
@@ -1515,6 +1786,11 @@ def markdown_to_html(markdown: str) -> str:
                 html_parts.append("</ul>")
                 in_list = False
             html_parts.append(f"<h3>{escape(line[3:])}</h3>")
+        elif line.startswith("### "):
+            if in_list:
+                html_parts.append("</ul>")
+                in_list = False
+            html_parts.append(f"<h4>{escape(line[4:])}</h4>")
         elif line.startswith("- "):
             if not in_list:
                 html_parts.append("<ul>")
@@ -2059,6 +2335,7 @@ def build_html(
     sensitivity: Optional[Mapping[str, Any]],
     lulc_report: Mapping[str, Any],
     lite_full_comparison: Optional[Mapping[str, Any]],
+    proxy_mappings_md: str,
 ) -> str:
     is_lite = WEBSITE_VARIANT == "lite"
     product_title = "Produto IBGE adaptado lite em 16 cm" if is_lite else "Produto IBGE adaptado em 16 cm"
@@ -2073,6 +2350,7 @@ def build_html(
     )
     method_description_md = complete_method_markdown(config, summary, stats)
     method_description_html = markdown_to_html(method_description_md)
+    proxy_mappings_html = markdown_to_html(proxy_mappings_md)
     lulc_mapping = custom_lulc_land_use_mapping()
     lulc_rows = [[k, LULC_NAMES.get(k, ""), v] for k, v in sorted(lulc_mapping.items())]
     slope_rows = [[lo, hi if hi is not None else ">=75", note] for lo, hi, note in config["slope_classes_percent_to_note"]]
@@ -2106,6 +2384,8 @@ def build_html(
             "Descrição completa do método LULC Lite" if is_lite else "Descrição completa do método LULC",
         ),
     ]
+    if is_lite:
+        tabs.append(("proxy_mappings", "Mapeamentos proxy GEO/GEM/PED"))
     if sensitivity is not None:
         tabs.append(("dtm_sensitivity", "Comparação com DTM tendencioso"))
     if lite_full_comparison is not None:
@@ -2248,6 +2528,12 @@ def build_html(
             "<p><a href=\"descricao_completa_metodo.md\">Abrir esta descrição em Markdown</a></p>"
             "</article>"
         ),
+        "proxy_mappings": (
+            "<article class=\"method-description\">"
+            f"{proxy_mappings_html}"
+            "<p><a href=\"descricao_completa_mapeamentos_proxy.md\">Abrir esta descrição em Markdown</a></p>"
+            "</article>"
+        ),
         "lulc_method_description": lulc_method_section(lulc_report, thumbs["lulc"]),
         "webviewer": (
             "<div class=\"viewer-shell\">"
@@ -2314,10 +2600,11 @@ def build_html(
     table {{ width:100%; border-collapse:collapse; margin:14px 0 18px; font-size:14px; }}
     th, td {{ text-align:left; border-bottom:1px solid var(--line); padding:8px 10px; vertical-align:top; }}
     th {{ background:#f0f4f8; color:#22313d; }}
-    #webviewer, #method_description, #lulc_method_description, #dtm_sensitivity, #lite_full_comparison {{ grid-column:1 / -1; background:transparent; border:0; padding:0; }}
+    #webviewer, #method_description, #proxy_mappings, #lulc_method_description, #dtm_sensitivity, #lite_full_comparison {{ grid-column:1 / -1; background:transparent; border:0; padding:0; }}
     .method-description {{ background:var(--panel); border:1px solid var(--line); border-radius:8px; padding:24px; max-width:1060px; }}
     .method-description h2 {{ margin-top:0; }}
     .method-description h3 {{ margin-top:24px; }}
+    .method-description h4 {{ margin:18px 0 8px; font-size:15px; }}
     .method-description p, .method-description li {{ line-height:1.65; color:var(--muted); }}
     .method-description ul {{ padding-left:22px; }}
     .sensitivity-page {{ display:grid; gap:18px; }}
@@ -2472,6 +2759,7 @@ def main() -> int:
         "class5": raster_stats(THEME_RASTERS["class5"], discrete=True),
         "valid": raster_stats(THEME_RASTERS["valid"], discrete=True, include_nodata=True),
     }
+    proxy_mappings_md = complete_proxy_mappings_markdown(config, stats)
     report_data = {
         "config": config,
         "summary": summary,
@@ -2481,6 +2769,7 @@ def main() -> int:
         "lite_full_comparison": lite_full_comparison,
         "website_variant": WEBSITE_VARIANT,
         "lulc_method": lulc_report,
+        "proxy_mappings_markdown": proxy_mappings_md,
         "stats": stats,
     }
     (ASSETS / "report_data.json").write_text(json.dumps(report_data, indent=2, ensure_ascii=False), encoding="utf-8")
@@ -2496,8 +2785,22 @@ def main() -> int:
         str(lulc_report["markdown"]),
         encoding="utf-8",
     )
+    (WEBSITE / "descricao_completa_mapeamentos_proxy.md").write_text(
+        proxy_mappings_md,
+        encoding="utf-8",
+    )
     (WEBSITE / "index.html").write_text(
-        build_html(config, summary, thumbnails, viewer, stats, sensitivity, lulc_report, lite_full_comparison),
+        build_html(
+            config,
+            summary,
+            thumbnails,
+            viewer,
+            stats,
+            sensitivity,
+            lulc_report,
+            lite_full_comparison,
+            proxy_mappings_md,
+        ),
         encoding="utf-8",
     )
     print(f"[ibge-website] Wrote {WEBSITE / 'index.html'}")
